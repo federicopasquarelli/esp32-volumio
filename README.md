@@ -8,7 +8,20 @@ This project is an ESP32-based smart clock designed for the ESP32-2432S028 ("Che
 - Real-time status display (Song Title, Artist, Album, Playback Status).
 - Volume control and mute toggle.
 
-## Setup
+## Installation
+
+### Prerequisites
+1. [Arduino IDE](https://www.arduino.cc/en/software) installed.
+2. ESP32 board support installed in Arduino IDE.
+
+### Required Libraries
+Install the following libraries via the Arduino Library Manager:
+- **lvgl** (by kisvegabor)
+- **Arduino_GFX_Library** (by Moon On Our Nation)
+- **WebSockets** (by Markus Sattler)
+- **ArduinoJson** (by Benoit Blanchon)
+
+### Setup
 To protect your WiFi and Volumio connection settings, this project uses a template file for secrets.
 
 1.  Copy `arduino_secrets.h.template` to `arduino_secrets.h`:
