@@ -11,5 +11,7 @@ void nextTrack();
 void setVolume(int level);
 void mute();
 void unmute();
+void setRepeatMode(bool value, bool repeatSingle);
+void setShuffle(bool shuffle);
 
 #endif

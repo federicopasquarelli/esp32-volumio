@@ -4,6 +4,6 @@
 void setupUI();
 void updateTime();
 lv_obj_t* addTab(const char* name);
-void updateVolumioUI(const char* title, const char* artist, const char* album, bool isPlaying);
+void updateVolumioUI(const char* title, const char* artist, const char* album, bool isPlaying, bool repeat, bool shuffle, bool repeatSingle);
 void updateVolumeUI(int volume);
 #endif

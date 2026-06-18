@@ -11,7 +11,15 @@ void webSocketEvent(WStype_t t, uint8_t* p, size_t l) {
     DynamicJsonDocument d(4096);
     deserializeJson(d, (char*)(p + 2));
     if (d[0] == "pushState") {
-      updateVolumioUI(d[1]["title"] | "None", d[1]["artist"] | "None", d[1]["album"] | "None", d[1]["status"] == "play");
+      updateVolumioUI(
+        d[1]["title"] | "None", 
+        d[1]["artist"] | "None", 
+        d[1]["album"] | "None", 
+        d[1]["status"] == "play",
+        d[1]["repeat"] | false,
+        d[1]["random"] | false,
+        d[1]["repeatSingle"] | false
+      );
       updateVolumeUI(d[1]["volume"] | 0);
     }
   }
@@ -35,3 +43,15 @@ void setVolume(int v) {
 
 void mute() { ws.sendTXT("42[\"mute\"]"); }
 void unmute() { ws.sendTXT("42[\"unmute\"]"); }
+
+void setRepeatMode(bool value, bool repeatSingle) {
+  char cmd[128];
+  sprintf(cmd, "42[\"setRepeat\", {\"value\": %s, \"repeatSingle\": %s}]", value ? "true" : "false", repeatSingle ? "true" : "false");
+  ws.sendTXT(cmd);
+}
+
+void setShuffle(bool s) {
+  char cmd[64];
+  sprintf(cmd, "42[\"setRandom\", {\"value\": %s}]", s ? "true" : "false");
+  ws.sendTXT(cmd);
+}
