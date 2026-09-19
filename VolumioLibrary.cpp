@@ -273,16 +273,21 @@ static void folderActionTask(void* pv) {
     vTaskDelete(NULL);
 }
 
+static void startAction(int action, const LibItem& item) {
+    if (action_menu_running) return;
+    action_requested = action;
+    action_menu_running = true;
+    xTaskCreatePinnedToCore(folderActionTask, "LibAction", 8192, new LibItem(item), 1, NULL, 1);
+}
+
 static void menu_action_cb(lv_event_t* e) {
     int action = (int)(intptr_t)lv_event_get_user_data(e);
     Serial.printf("[Library] Menu action %d on '%s'\n", action, menu_item.uri);
     if (action == ACTION_UPDATE) {
         // Volumio has no REST route for a database update, so this one uses the WebSocket.
         updateFolder(menu_item.uri);
-    } else if (!action_menu_running) {
-        action_requested = action;
-        action_menu_running = true;
-        xTaskCreatePinnedToCore(folderActionTask, "LibAction", 8192, new LibItem(menu_item), 1, NULL, 1);
+    } else {
+        startAction(action, menu_item);
     }
     // The overlay is the panel's parent.
     lv_obj_t* overlay = lv_obj_get_parent(lv_obj_get_parent(lv_event_get_target_obj(e)));
@@ -340,6 +345,11 @@ static void item_cb(lv_event_t* e) {
     }
 }
 
+static void track_cb(lv_event_t* e) {
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx >= 0 && idx < item_count) startAction(ACTION_PLAY, items[idx]);
+}
+
 // Only the current page is turned into widgets, so a huge folder costs no more than a small one.
 static void showList() {
     lv_obj_clean(list_library);
@@ -353,9 +363,7 @@ static void showList() {
         if (folder) {
             lv_obj_add_event_cb(b, item_cb, LV_EVENT_ALL, (void*)(intptr_t)i);
         } else {
-            // Tracks are listed for context but can't be opened.
-            lv_obj_set_style_text_color(b, lv_color_hex(0x777777), 0);
-            lv_obj_remove_flag(b, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(b, track_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
         }
     }
 

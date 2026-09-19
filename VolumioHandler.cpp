@@ -64,3 +64,9 @@ void updateFolder(const char* uri) {
   serializeJson(d, msg);
   ws.sendTXT(msg);
 }
+
+void removeFromQueue(int index) {
+  char cmd[64];
+  snprintf(cmd, sizeof(cmd), "42[\"removeFromQueue\",{\"value\":%d}]", index);
+  ws.sendTXT(cmd);
+}

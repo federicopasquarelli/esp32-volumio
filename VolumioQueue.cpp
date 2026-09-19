@@ -1,6 +1,8 @@
 #include "VolumioQueue.h"
 #include "arduino_secrets.h"
 #include "DisplayConfig.h"
+#include "VolumioHandler.h"
+#include "DisplayConfig.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -159,6 +161,22 @@ static void item_cb(lv_event_t* e) {
     if (!busy && idx >= 0 && idx < item_count) startOp(OP_PLAY, idx);
 }
 
+static void showList();
+
+static void remove_cb(lv_event_t* e) {
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (busy || idx < 0 || idx >= item_count) return;
+
+    // Volumio has no REST route for this, so it goes over the WebSocket.
+    removeFromQueue(idx);
+
+    // Update the list locally so the following rows shift up without a reload.
+    memmove(titles[idx], titles[idx + 1], (size_t)(item_count - idx - 1) * QUEUE_TITLE_LEN);
+    item_count--;
+    if (page >= pageCount()) page = pageCount() - 1;
+    showList();
+}
+
 // Only the current page is turned into widgets, so a long queue costs no more than a short one.
 static void showList() {
     lv_obj_clean(list_queue);
@@ -169,6 +187,16 @@ static void showList() {
         lv_obj_t* b = lv_list_add_button(list_queue, LV_SYMBOL_AUDIO, titles[i]);
         styleButton(b);
         lv_obj_add_event_cb(b, item_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+
+        lv_obj_t* rm = lv_button_create(b);
+        lv_obj_set_size(rm, 30, QUEUE_ROW_H - 8);
+        lv_obj_set_style_bg_color(rm, lv_color_hex(COLOR_ACCENT), 0);
+        lv_obj_set_style_bg_color(rm, lv_color_hex(0x19A34A), LV_STATE_PRESSED);
+        lv_obj_set_style_text_color(rm, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_add_event_cb(rm, remove_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+        lv_obj_t* l = lv_label_create(rm);
+        lv_label_set_text(l, LV_SYMBOL_CLOSE);
+        lv_obj_center(l);
     }
 
     if (item_count == 0) lv_list_add_text(list_queue, "Queue is empty");
