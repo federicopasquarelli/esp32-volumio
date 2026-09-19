@@ -13,5 +13,6 @@ void mute();
 void unmute();
 void setRepeatMode(bool value, bool repeatSingle);
 void setShuffle(bool shuffle);
+void updateFolder(const char* uri);
 
 #endif

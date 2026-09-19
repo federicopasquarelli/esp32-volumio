@@ -22,6 +22,12 @@
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
 
+// Backlight turns off after this long without a touch
+#define SCREEN_TIMEOUT_MS (3UL * 60UL * 1000UL)
+
+// Accent for the selected tab and active buttons
+#define COLOR_ACCENT 0x1DB954
+
 // Standard 16-bit Colors (RGB565)
 #define BLACK   0x0000
 #define WHITE   0xFFFF

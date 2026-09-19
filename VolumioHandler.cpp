@@ -8,7 +8,7 @@ WebSocketsClient ws;
 void webSocketEvent(WStype_t t, uint8_t* p, size_t l) {
   if (t == WStype_CONNECTED) ws.sendTXT("42[\"getState\"]");
   if (t == WStype_TEXT && l > 2 && p[0] == '4' && p[1] == '2') {
-    DynamicJsonDocument d(4096);
+    JsonDocument d;
     deserializeJson(d, (char*)(p + 2));
     if (d[0] == "pushState") {
       updateVolumioUI(
@@ -54,4 +54,13 @@ void setShuffle(bool s) {
   char cmd[64];
   sprintf(cmd, "42[\"setRandom\", {\"value\": %s}]", s ? "true" : "false");
   ws.sendTXT(cmd);
+}
+
+void updateFolder(const char* uri) {
+  JsonDocument d;
+  d.add("updateDb");
+  d.add(uri);
+  String msg = "42";
+  serializeJson(d, msg);
+  ws.sendTXT(msg);
 }
