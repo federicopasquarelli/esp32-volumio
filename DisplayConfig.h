@@ -28,6 +28,9 @@
 // Accent for the selected tab and active buttons
 #define COLOR_ACCENT 0x1DB954
 
+// Height of the top bar (clock + menu/back button), above the player/library/queue screens
+#define TOP_BAR_H 36
+
 // Standard 16-bit Colors (RGB565)
 #define BLACK   0x0000
 #define WHITE   0xFFFF

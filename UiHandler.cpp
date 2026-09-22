@@ -1,18 +1,34 @@
 #include "UiHandler.h"
 #include "DisplayConfig.h"
 #include "VolumioHandler.h"
+#include "VolumioArt.h"
 #include <time.h>
 
-static lv_obj_t *label_top, *tabview, *label_title, *label_artist, *label_album;
-static lv_obj_t *btn_play, *btn_label, *btn_prev, *btn_next, *btn_repeat, *btn_shuffle;
-static lv_obj_t *slider_volume, *btn_mute;
-static bool isMuted = false;
+#define MAX_SCREENS 4
+
+static lv_obj_t *label_top, *cont_player, *btn_menu, *menu_list, *btn_back, *label_title, *label_artist, *label_album;
+static lv_obj_t *label_elapsed, *label_volume;
+static lv_obj_t *btn_play, *btn_label, *btn_prev, *btn_next, *btn_shuffle, *btn_repeat;
+static lv_obj_t *slider_volume;
+static bool currentShuffle = false;
 static bool currentRepeat = false;
 static bool currentRepeatSingle = false;
-static bool currentShuffle = false;
 
+// The elapsed time ticks locally once a second, rather than only redrawing on a pushState
+// (Volumio doesn't push one continuously during playback, e.g. it doesn't push one every
+// second, so waiting on the websocket alone made the label look frozen). Whenever a pushState
+// does arrive, base_elapsed_sec/base_elapsed_at_ms are resynced to Volumio's authoritative
+// value, correcting for local drift and for seeks/track changes.
+static int base_elapsed_sec = 0;
+static unsigned long base_elapsed_at_ms = 0;
+static int cur_duration_sec = 0;
+static bool cur_is_playing = false;
 
-// Active buttons are filled with the accent, inactive ones are empty, like the tab labels.
+struct ScreenEntry { lv_obj_t* obj; void (*on_show)(void); };
+static ScreenEntry screens[MAX_SCREENS];
+static int screen_count = 0;
+
+// Active buttons are filled with the accent, inactive ones are empty, like the tab labels used to be.
 static void set_btn_active_style(lv_obj_t* btn) {
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_ACCENT), LV_STATE_DEFAULT);
@@ -36,7 +52,9 @@ static void play_cb(lv_event_t * e) { togglePlayback(); }
 static void prev_cb(lv_event_t * e) { prevTrack(); }
 static void next_cb(lv_event_t * e) { nextTrack(); }
 
-static void repeat_cb(lv_event_t * e) { 
+static void shuffle_cb(lv_event_t * e) { setShuffle(!currentShuffle); }
+
+static void repeat_cb(lv_event_t * e) {
     if (!currentRepeat) {
         // Was OFF, go to Repeat All
         setRepeatMode(true, false);
@@ -49,163 +67,301 @@ static void repeat_cb(lv_event_t * e) {
     }
 }
 
-static void shuffle_cb(lv_event_t * e) { setShuffle(!currentShuffle); }
+static void volume_cb(lv_event_t * e) {
+    int v = lv_slider_get_value(lv_event_get_target_obj(e));
+    setVolume(v);
+    lv_label_set_text_fmt(label_volume, "%d", v);
+}
 
-static void volume_cb(lv_event_t * e) { setVolume(lv_slider_get_value(lv_event_get_target_obj(e))); }
-static void mute_cb(lv_event_t * e) {
-    if (isMuted) {
-        unmute();
-        isMuted = false;
-        set_btn_active_style(btn_mute);
-        lv_label_set_text(lv_obj_get_child(btn_mute, 0), LV_SYMBOL_VOLUME_MAX);
-    } else {
-        mute();
-        isMuted = true;
-        set_btn_inactive_style(btn_mute);
-        lv_label_set_text(lv_obj_get_child(btn_mute, 0), LV_SYMBOL_MUTE);
+// mm:ss (zero-padded, e.g. "03:04"), or h:mm:ss once it runs an hour long.
+static void formatTime(char* out, size_t out_len, int totalSec) {
+    if (totalSec < 0) totalSec = 0;
+    int h = totalSec / 3600, m = (totalSec % 3600) / 60, s = totalSec % 60;
+    if (h > 0) snprintf(out, out_len, "%d:%02d:%02d", h, m, s);
+    else snprintf(out, out_len, "%02d:%02d", m, s);
+}
+
+// Redraws the "elapsed / duration" label. Called every loop() iteration, not on any timer of
+// its own: elapsed is recomputed fresh each time from real milliseconds since the last
+// pushState, so the displayed second changes exactly when it should, with nothing to
+// accidentally phase-lock against another timer (which a periodic "tick every ~1000ms" was
+// doing, even with distinct variables — they kept resetting to the same millis() together).
+static int last_displayed_elapsed = -1;
+static void refreshPlaybackClock() {
+    if (!label_elapsed) return;
+
+    int elapsed = base_elapsed_sec;
+    if (cur_is_playing) elapsed += (millis() - base_elapsed_at_ms) / 1000;
+    if (elapsed > cur_duration_sec) elapsed = cur_duration_sec;
+    if (elapsed == last_displayed_elapsed) return;  // avoid redrawing every 5ms for nothing
+    last_displayed_elapsed = elapsed;
+
+    char elapsed_buf[16], duration_buf[16], time_buf[36];
+    formatTime(elapsed_buf, sizeof(elapsed_buf), elapsed);
+    formatTime(duration_buf, sizeof(duration_buf), cur_duration_sec);
+    snprintf(time_buf, sizeof(time_buf), "%s / %s", elapsed_buf, duration_buf);
+    lv_label_set_text(label_elapsed, time_buf);
+}
+
+// Hides every registered screen and the player, then shows just the target and runs its
+// on_show callback, if it has one. Also closes the dropdown menu, in case it was left open.
+static void showScreen(lv_obj_t* target) {
+    lv_obj_add_flag(cont_player, LV_OBJ_FLAG_HIDDEN);
+    void (*on_show)(void) = NULL;
+    for (int i = 0; i < screen_count; i++) {
+        lv_obj_add_flag(screens[i].obj, LV_OBJ_FLAG_HIDDEN);
+        if (screens[i].obj == target) on_show = screens[i].on_show;
     }
+    lv_obj_remove_flag(target, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(menu_list, LV_OBJ_FLAG_HIDDEN);
+    // Top right shows the dropdown on the player screen, and a Back button everywhere else.
+    bool is_player = (target == cont_player);
+    if (is_player) lv_obj_remove_flag(btn_menu, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(btn_menu, LV_OBJ_FLAG_HIDDEN);
+    if (is_player) lv_obj_add_flag(btn_back, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_flag(btn_back, LV_OBJ_FLAG_HIDDEN);
+    if (on_show) on_show();
+}
+
+static void back_cb(lv_event_t*) { showScreen(cont_player); }
+
+static void menu_toggle_cb(lv_event_t*) {
+    if (lv_obj_has_flag(menu_list, LV_OBJ_FLAG_HIDDEN)) {
+        // Screens are created after the menu, so bring it back above whichever one is showing.
+        lv_obj_move_foreground(menu_list);
+        lv_obj_remove_flag(menu_list, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(menu_list, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void menu_item_cb(lv_event_t* e) {
+    showScreen((lv_obj_t*)lv_event_get_user_data(e));
 }
 
 void setupUI() {
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
-    
+
     label_top = lv_label_create(scr);
     lv_obj_set_style_text_font(label_top, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(label_top, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(label_top, LV_ALIGN_TOP_LEFT, 10, 5);
-    
-    tabview = lv_tabview_create(scr);
-    lv_tabview_set_tab_bar_position(tabview, LV_DIR_TOP);
-    lv_tabview_set_tab_bar_size(tabview, 40);
-    lv_obj_set_pos(tabview, 0, 30);
-    lv_obj_set_size(tabview, SCREEN_WIDTH, SCREEN_HEIGHT - 30);
-    lv_obj_set_style_bg_color(tabview, lv_color_hex(0x000000), 0);
-    // Tabs change only by tapping their label, not by swiping the content.
-    lv_obj_remove_flag(lv_tabview_get_content(tabview), LV_OBJ_FLAG_SCROLLABLE);
-    
-    lv_obj_t *tab_btns = lv_tabview_get_tab_bar(tabview);
-    lv_obj_set_style_bg_color(tab_btns, lv_color_hex(0x000000), 0);
+
+    // Elapsed / duration, top center, between the clock and the dropdown/back button. Lives in
+    // the shared header (like the clock) rather than the player screen's own content, so it's
+    // visible from Library/Queue too.
+    label_elapsed = lv_label_create(scr);
+    lv_obj_set_style_text_color(label_elapsed, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_align(label_elapsed, LV_ALIGN_TOP_MID, 0, 8);
+
+    // Menu button, top right, level with the time. Only shown on the player screen, it's how
+    // you leave it for Library/Queue. The Back button below takes its place everywhere else.
+    btn_menu = lv_button_create(scr);
+    lv_obj_set_size(btn_menu, 36, 22);
+    lv_obj_align(btn_menu, LV_ALIGN_TOP_RIGHT, -10, 5);
+    set_btn_inactive_style(btn_menu);
+    lv_obj_add_event_cb(btn_menu, menu_toggle_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t* menu_icon = lv_label_create(btn_menu);
+    lv_label_set_text(menu_icon, LV_SYMBOL_LIST);
+    lv_obj_center(menu_icon);
+
+    // Back button, same top-right spot as the menu button, shown only on Library/Queue.
+    btn_back = lv_button_create(scr);
+    lv_obj_set_size(btn_back, 36, 22);
+    lv_obj_align(btn_back, LV_ALIGN_TOP_RIGHT, -10, 5);
+    set_btn_active_style(btn_back);
+    lv_obj_add_event_cb(btn_back, back_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t* back_icon = lv_label_create(btn_back);
+    lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
+    lv_obj_center(back_icon);
+    lv_obj_add_flag(btn_back, LV_OBJ_FLAG_HIDDEN);
+
+    // Dropdown panel, one entry per screen registered with addScreen(). Hidden until tapped.
+    menu_list = lv_obj_create(scr);
+    lv_obj_set_size(menu_list, 120, LV_SIZE_CONTENT);
+    lv_obj_align_to(menu_list, btn_menu, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 4);
+    lv_obj_set_style_bg_color(menu_list, lv_color_hex(0x111111), 0);
+    lv_obj_set_style_border_color(menu_list, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_set_style_border_width(menu_list, 1, 0);
+    lv_obj_set_style_pad_all(menu_list, 4, 0);
+    lv_obj_set_style_pad_row(menu_list, 4, 0);
+    lv_obj_remove_flag(menu_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(menu_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_add_flag(menu_list, LV_OBJ_FLAG_HIDDEN);
+
+    // Player screen. Unlike the pages from addScreen(), it's shown by default and has no
+    // back button or menu entry of its own.
+    cont_player = lv_obj_create(scr);
+    lv_obj_set_pos(cont_player, 0, TOP_BAR_H);
+    lv_obj_set_size(cont_player, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_H);
+    lv_obj_set_style_bg_color(cont_player, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_border_width(cont_player, 0, 0);
+    lv_obj_set_style_pad_all(cont_player, 0, 0);
+    lv_obj_remove_flag(cont_player, LV_OBJ_FLAG_SCROLLABLE);
 }
 
 void updateTime() {
     struct tm ti;
     if (getLocalTime(&ti) && ti.tm_year > 100) {
-        char s[64]; strftime(s, 64, "%A, %B %d  -  %H:%M:%S", &ti);
+        char s[16]; strftime(s, sizeof(s), "%H:%M:%S", &ti);
         lv_label_set_text(label_top, s);
     }
 }
 
-lv_obj_t* addTab(const char* name) {
-    lv_obj_t* t = lv_tabview_add_tab(tabview, name);
+lv_obj_t* addScreen(const char* name, void (*on_show)(void)) {
+    // Its own Back button lives in the shared top bar (see btn_back), so the screen is plain
+    // content filling the space below it, same geometry the player screen uses.
+    lv_obj_t* screen = lv_obj_create(lv_screen_active());
+    lv_obj_set_pos(screen, 0, TOP_BAR_H);
+    lv_obj_set_size(screen, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_H);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_border_width(screen, 0, 0);
+    lv_obj_set_style_pad_all(screen, 0, 0);
+    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
 
-    // Each tab label is a button in the tab bar, the newest one belongs to this tab.
-    lv_obj_t* bar = lv_tabview_get_tab_bar(tabview);
-    lv_obj_t* label_btn = lv_obj_get_child(bar, lv_obj_get_child_count(bar) - 1);
-    lv_obj_set_style_bg_color(label_btn, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_color(label_btn, lv_color_hex(0xAAAAAA), 0);
-    lv_obj_set_style_bg_color(label_btn, lv_color_hex(COLOR_ACCENT), LV_STATE_CHECKED);
-    lv_obj_set_style_text_color(label_btn, lv_color_hex(0xFFFFFF), LV_STATE_CHECKED);
-    lv_obj_set_style_bg_color(t, lv_color_hex(0x000000), 0);
-    return t;
+    if (screen_count < MAX_SCREENS) screens[screen_count++] = { screen, on_show };
+
+    // Matching entry in the top-right dropdown.
+    lv_obj_t* menu_btn = lv_button_create(menu_list);
+    lv_obj_set_size(menu_btn, LV_PCT(100), 28);
+    set_btn_inactive_style(menu_btn);
+    lv_obj_add_event_cb(menu_btn, menu_item_cb, LV_EVENT_CLICKED, screen);
+    lv_obj_t* menu_label = lv_label_create(menu_btn);
+    lv_label_set_text(menu_label, name);
+    lv_obj_center(menu_label);
+
+    return screen;
 }
 
+void updateVolumioUI(const char* title, const char* artist, const char* album, bool isPlaying, bool shuffle, bool repeat, bool repeatSingle, int elapsedSec, int durationSec) {
 
-void updateVolumioUI(const char* title, const char* artist, const char* album, bool isPlaying, bool repeat, bool shuffle, bool repeatSingle) {
-
+    currentShuffle = shuffle;
     currentRepeat = repeat;
     currentRepeatSingle = repeatSingle;
-    currentShuffle = shuffle;
 
     if (!label_title) {
-        lv_obj_t* t1 = lv_obj_get_child(lv_tabview_get_content(tabview), 0);
+        lv_obj_t* t1 = cont_player;
+
+        // Album art, top of the screen. 64x64 matches Volumio's "medium" tinyart size exactly,
+        // so nothing needs scaling. Falls back to a placeholder box when no real art is found.
+        setupAlbumArt(t1, 8, 6, 64, 64);
+
+        lv_obj_t* now_playing = lv_label_create(t1);
+        lv_label_set_text(now_playing, "NOW PLAYING");
+        lv_obj_set_style_text_font(now_playing, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(now_playing, lv_color_hex(COLOR_ACCENT), 0);
+        lv_obj_set_pos(now_playing, 78, 4);
+
         label_title = lv_label_create(t1);
         lv_label_set_long_mode(label_title, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-        lv_obj_set_width(label_title, 280);
+        lv_obj_set_width(label_title, 226);
         lv_obj_set_style_text_font(label_title, &lv_font_montserrat_18, 0);
         lv_obj_set_style_text_color(label_title, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_align(label_title, LV_ALIGN_TOP_LEFT, 0, 0);
-        
+        lv_obj_set_pos(label_title, 78, 20);
+
         label_artist = lv_label_create(t1);
         lv_label_set_long_mode(label_artist, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-        lv_obj_set_width(label_artist, 280);
+        lv_obj_set_width(label_artist, 226);
         lv_obj_set_style_text_font(label_artist, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(label_artist, lv_color_hex(0xCCCCCC), 0);
-        lv_obj_align(label_artist, LV_ALIGN_TOP_LEFT, 0, 25);
-        
+        lv_obj_set_pos(label_artist, 78, 42);
+
         label_album = lv_label_create(t1);
         lv_label_set_long_mode(label_album, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-        lv_obj_set_width(label_album, 280);
+        lv_obj_set_width(label_album, 226);
         lv_obj_set_style_text_font(label_album, &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(label_album, lv_color_hex(0x888888), 0);
-        lv_obj_align(label_album, LV_ALIGN_TOP_LEFT, 0, 45);
+        lv_obj_set_pos(label_album, 78, 60);
+
+        // Transport row: shuffle, prev, play/pause (big, round), next, centered as a group.
+        btn_shuffle = lv_button_create(t1);
+        lv_obj_set_size(btn_shuffle, 34, 34);
+        lv_obj_set_style_radius(btn_shuffle, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_pos(btn_shuffle, 31, 107);
+        lv_obj_add_event_cb(btn_shuffle, shuffle_cb, LV_EVENT_CLICKED, NULL);
+        lv_label_set_text(lv_label_create(btn_shuffle), LV_SYMBOL_SHUFFLE);
+        lv_obj_center(lv_obj_get_child(btn_shuffle, 0));
+        set_btn_inactive_style(btn_shuffle);
 
         btn_prev = lv_button_create(t1);
-        lv_obj_set_size(btn_prev, 40, 40);
-        lv_obj_align(btn_prev, LV_ALIGN_TOP_LEFT, 0, 70);
+        lv_obj_set_size(btn_prev, 46, 46);
+        lv_obj_set_style_radius(btn_prev, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_pos(btn_prev, 75, 101);
         lv_obj_add_event_cb(btn_prev, prev_cb, LV_EVENT_CLICKED, NULL);
         lv_label_set_text(lv_label_create(btn_prev), LV_SYMBOL_PREV);
         lv_obj_center(lv_obj_get_child(btn_prev, 0));
         set_btn_active_style(btn_prev);
 
         btn_play = lv_button_create(t1);
-        lv_obj_set_size(btn_play, 40, 40);
-        lv_obj_align_to(btn_play, btn_prev, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+        lv_obj_set_size(btn_play, 64, 64);
+        lv_obj_set_style_radius(btn_play, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_pos(btn_play, 129, 92);
         lv_obj_add_event_cb(btn_play, play_cb, LV_EVENT_CLICKED, NULL);
         btn_label = lv_label_create(btn_play);
+        lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_18, 0);
         lv_obj_center(btn_label);
         set_btn_active_style(btn_play);
 
         btn_next = lv_button_create(t1);
-        lv_obj_set_size(btn_next, 40, 40);
-        lv_obj_align_to(btn_next, btn_play, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+        lv_obj_set_size(btn_next, 46, 46);
+        lv_obj_set_style_radius(btn_next, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_pos(btn_next, 201, 101);
         lv_obj_add_event_cb(btn_next, next_cb, LV_EVENT_CLICKED, NULL);
         lv_label_set_text(lv_label_create(btn_next), LV_SYMBOL_NEXT);
         lv_obj_center(lv_obj_get_child(btn_next, 0));
         set_btn_active_style(btn_next);
 
         btn_repeat = lv_button_create(t1);
-        lv_obj_set_size(btn_repeat, 40, 40);
-        lv_obj_align_to(btn_repeat, btn_next, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+        lv_obj_set_size(btn_repeat, 34, 34);
+        lv_obj_set_style_radius(btn_repeat, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_pos(btn_repeat, 255, 107);
         lv_obj_add_event_cb(btn_repeat, repeat_cb, LV_EVENT_CLICKED, NULL);
         lv_label_set_text(lv_label_create(btn_repeat), LV_SYMBOL_REFRESH);
         lv_obj_center(lv_obj_get_child(btn_repeat, 0));
         // Style will be set dynamically below
-        set_btn_active_style(btn_repeat);
+        set_btn_inactive_style(btn_repeat);
 
-        btn_shuffle = lv_button_create(t1);
-        lv_obj_set_size(btn_shuffle, 40, 40);
-        lv_obj_align_to(btn_shuffle, btn_repeat, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
-        lv_obj_add_event_cb(btn_shuffle, shuffle_cb, LV_EVENT_CLICKED, NULL);
-        lv_label_set_text(lv_label_create(btn_shuffle), LV_SYMBOL_SHUFFLE);
-        lv_obj_center(lv_obj_get_child(btn_shuffle, 0));
-        // Style will be set dynamically below
-        set_btn_active_style(btn_shuffle);
-
-        btn_mute = lv_button_create(t1);
-        lv_obj_set_size(btn_mute, 40, 40);
-        lv_obj_align_to(btn_mute, btn_shuffle, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
-        lv_obj_add_event_cb(btn_mute, mute_cb, LV_EVENT_CLICKED, NULL);
-        lv_label_set_text(lv_label_create(btn_mute), isMuted ? LV_SYMBOL_MUTE : LV_SYMBOL_VOLUME_MAX);
-        lv_obj_center(lv_obj_get_child(btn_mute, 0));
-        set_btn_active_style(btn_mute);
+        // Volume, bottom of the screen.
+        lv_obj_t* vol_icon = lv_label_create(t1);
+        lv_label_set_text(vol_icon, LV_SYMBOL_VOLUME_MAX);
+        lv_obj_set_style_text_color(vol_icon, lv_color_hex(0xAAAAAA), 0);
+        lv_obj_set_pos(vol_icon, 8, 173);
 
         slider_volume = lv_slider_create(t1);
-        lv_obj_set_size(slider_volume, 250, 15);
-        lv_obj_align(slider_volume, LV_ALIGN_TOP_LEFT, 0, 130);
+        lv_obj_set_size(slider_volume, 246, 6);
+        lv_obj_set_pos(slider_volume, 30, 177);
         lv_slider_set_range(slider_volume, 0, 100);
         lv_obj_add_event_cb(slider_volume, volume_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+        label_volume = lv_label_create(t1);
+        lv_obj_set_style_text_color(label_volume, lv_color_hex(0xAAAAAA), 0);
+        lv_obj_set_pos(label_volume, 284, 173);
     }
-    
+
     lv_label_set_text(label_title, title);
     lv_label_set_text(label_artist, artist);
     lv_label_set_text(label_album, album);
     lv_label_set_text(btn_label, isPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
-    
+
+    base_elapsed_sec = elapsedSec;
+    base_elapsed_at_ms = millis();
+    cur_duration_sec = durationSec;
+    cur_is_playing = isPlaying;
+    refreshPlaybackClock();
+
+    // Update Shuffle button state
+    if (shuffle) {
+        set_btn_active_style(btn_shuffle);
+    } else {
+        set_btn_inactive_style(btn_shuffle);
+    }
+
     // Update Repeat button state
     lv_obj_t* repeat_label = lv_obj_get_child(btn_repeat, 0);
     if (repeatSingle) {
-        lv_label_set_text(repeat_label, LV_SYMBOL_REFRESH " 1"); 
+        lv_label_set_text(repeat_label, LV_SYMBOL_REFRESH " 1");
         set_btn_active_style(btn_repeat);
     } else if (repeat) {
         lv_label_set_text(repeat_label, LV_SYMBOL_REFRESH);
@@ -214,17 +370,15 @@ void updateVolumioUI(const char* title, const char* artist, const char* album, b
         lv_label_set_text(repeat_label, LV_SYMBOL_REFRESH);
         set_btn_inactive_style(btn_repeat);
     }
-    
-    // Update Shuffle button state
-    if (shuffle) {
-        set_btn_active_style(btn_shuffle);
-    } else {
-        set_btn_inactive_style(btn_shuffle);
-    }
 }
 
 void updateVolumeUI(int volume) {
     if (slider_volume) {
         lv_slider_set_value(slider_volume, volume, LV_ANIM_OFF);
+        lv_label_set_text_fmt(label_volume, "%d", volume);
     }
+}
+
+void tickPlaybackClock() {
+    refreshPlaybackClock();
 }

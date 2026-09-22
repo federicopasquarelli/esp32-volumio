@@ -6,19 +6,22 @@
 WebSocketsClient ws;
 
 void webSocketEvent(WStype_t t, uint8_t* p, size_t l) {
-  if (t == WStype_CONNECTED) ws.sendTXT("42[\"getState\"]");
+  if (t == WStype_CONNECTED) { Serial.println("[WS] connected"); ws.sendTXT("42[\"getState\"]"); }
+  if (t == WStype_DISCONNECTED) Serial.println("[WS] disconnected");
   if (t == WStype_TEXT && l > 2 && p[0] == '4' && p[1] == '2') {
     JsonDocument d;
     deserializeJson(d, (char*)(p + 2));
     if (d[0] == "pushState") {
       updateVolumioUI(
-        d[1]["title"] | "None", 
-        d[1]["artist"] | "None", 
-        d[1]["album"] | "None", 
+        d[1]["title"] | "None",
+        d[1]["artist"] | "None",
+        d[1]["album"] | "None",
         d[1]["status"] == "play",
-        d[1]["repeat"] | false,
         d[1]["random"] | false,
-        d[1]["repeatSingle"] | false
+        d[1]["repeat"] | false,
+        d[1]["repeatSingle"] | false,
+        (int)((d[1]["seek"] | 0) / 1000),  // seek is in ms, elapsed is shown in seconds
+        d[1]["duration"] | 0
       );
       updateVolumeUI(d[1]["volume"] | 0);
     }

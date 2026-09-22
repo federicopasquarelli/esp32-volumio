@@ -2,7 +2,6 @@
 #include "arduino_secrets.h"
 #include "DisplayConfig.h"
 #include "VolumioHandler.h"
-#include "DisplayConfig.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -237,12 +236,6 @@ static lv_obj_t* addNavButton(lv_obj_t* bar, const char* symbol, lv_event_cb_t c
     return b;
 }
 
-// Reload the queue each time the user switches to this tab, since it can change from anywhere.
-static void tabview_cb(lv_event_t* e) {
-    lv_obj_t* tabview = lv_event_get_target_obj(e);
-    if (lv_tabview_get_tab_active(tabview) == (uint32_t)lv_obj_get_index(tab_queue)) refreshQueue();
-}
-
 void setupQueue(lv_obj_t* parent_tab) {
     tab_queue = parent_tab;
     titles = new char[QUEUE_MAX_ITEMS][QUEUE_TITLE_LEN];
@@ -276,9 +269,6 @@ void setupQueue(lv_obj_t* parent_tab) {
     lv_obj_set_style_text_color(label_page, lv_color_hex(0xFFFFFF), 0);
     btn_next_page = addNavButton(bar, LV_SYMBOL_RIGHT, next_page_cb);
     updateNav(false);
-
-    lv_obj_t* tabview = lv_obj_get_parent(lv_obj_get_parent(tab_queue));
-    lv_obj_add_event_cb(tabview, tabview_cb, LV_EVENT_VALUE_CHANGED, NULL);
 }
 
 void refreshQueue() {
