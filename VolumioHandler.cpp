@@ -44,9 +44,6 @@ void setVolume(int v) {
   ws.sendTXT(cmd);
 }
 
-void mute() { ws.sendTXT("42[\"mute\"]"); }
-void unmute() { ws.sendTXT("42[\"unmute\"]"); }
-
 void setRepeatMode(bool value, bool repeatSingle) {
   char cmd[128];
   sprintf(cmd, "42[\"setRepeat\", {\"value\": %s, \"repeatSingle\": %s}]", value ? "true" : "false", repeatSingle ? "true" : "false");

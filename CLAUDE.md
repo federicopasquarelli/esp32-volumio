@@ -34,8 +34,9 @@ Volumio host for dev: `volumio.local:3000` (see `arduino_secrets.h`, gitignored)
   update folder).
 - [VolumioQueue.cpp](VolumioQueue.cpp) — queue viewer/editor, HTTP via `/api/v1/getQueue` +
   `/api/v1/commands/?cmd=...`, per-item remove button.
-- [VolumioArt.cpp](VolumioArt.cpp) — album art fetch + display. **Currently being debugged, see
-  [DEBUG_ALBUM_ART.md](DEBUG_ALBUM_ART.md).**
+- [VolumioArt.cpp](VolumioArt.cpp) — currently just a static placeholder box (music-note icon on
+  an accent-colored square). Real artwork fetching was built, got working, then got reverted —
+  see item 8 below before attempting this again.
 - [DisplayConfig.h](DisplayConfig.h) — pins, screen dims, shared constants (`COLOR_ACCENT`,
   `TOP_BAR_H`, `SCREEN_TIMEOUT_MS`).
 
@@ -70,38 +71,46 @@ Volumio host for dev: `volumio.local:3000` (see `arduino_secrets.h`, gitignored)
    + title/artist/album to its right, elapsed/duration as plain text (no progress bar — never
    asked for), big round play/pause button centered with prev/next flanking it and
    shuffle/repeat further out, volume slider + numeric readout at the bottom. Mute button
-   removed per request (kept `mute()`/`unmute()` in `VolumioHandler.cpp` unused, in case it
-   comes back). Repeat was accidentally dropped once, then restored next to Next.
+   removed per request. Repeat was accidentally dropped once, then restored next to Next.
 7. **Screen timeout**: backlight off after `SCREEN_TIMEOUT_MS` (3 min, `DisplayConfig.h`) with no
    touch; first touch after sleep just wakes the screen, doesn't also act as a press
    (`LvglHandler.cpp`, `my_touch_read`).
-8. **Album art** (working, confirmed live on-device — full findings/history in
-   [DEBUG_ALBUM_ART.md](DEBUG_ALBUM_ART.md)). Volumio's main `/albumart` endpoint serves the
-   original file, which for local-library tracks turned out to be a 1000x1000 **progressive**
-   JPEG — undecodable by any lightweight ESP32 decoder. Uses Volumio's
-   `/tinyart/<artist>/<album>/small` instead (34x34 PNG, scaled up to 64x64 via
-   `lv_image_set_scale()`). Enabled `LV_USE_LODEPNG` in the global `lv_conf.h` to decode it.
-   `HTTPClient` couldn't read `/tinyart`'s response at all (no Content-Length, not chunked) —
-   `VolumioArt.cpp` talks to a raw `WiFiClient` instead. The download/display buffers are
-   `heap_caps_malloc`'d **once**, in `initAlbumArtMemory()`, called from `setup()` before
-   `WiFi.begin()` — allocating fresh per track change was intermittently failing (this board has
-   no PSRAM and the heap fragments once WiFi/Library/Queue are running); reserving early while
-   the heap's still pristine fixed it (verified 0 allocation failures across 7 sampled real track
-   changes, vs. ~2/3 failing before). One accepted, unfixed coverage gap: some albums' art comes
-   back as JPEG (sometimes progressive) from Volumio's own thumbnailer rather than PNG — those
-   never show real art here, by design (only PNG is decoded).
+8. **Album art: built, worked, then reverted to a placeholder.** None of this is in the codebase
+   now — kept here only so it isn't re-attempted the same way. Got real art working via Volumio's
+   `/tinyart/<artist>/<album>/small` for local files. Then extended it to also fetch plugin-sourced
+   art (Spotify etc, over HTTPS with a JPEG decoder) — **that extension broke WiFi connectivity
+   outright** (see quirks below). Per explicit user instruction, all of it was reverted, including
+   the previously-working `/tinyart` part, back to a plain static placeholder.
+9. **UI polish pass**: longer/thinner volume slider; playback time changed from two separate
+   labels to one zero-padded `"03:04 / 04:30"` label, moved into the shared top header (visible
+   from Library/Queue too, not just the player), centered between the clock and the dropdown/back
+   button. Getting the elapsed time itself to tick correctly took a few tries — see the timer
+   quirk below.
 
 ## Known quirks / gotchas worth remembering
 
-- **`/tinyart` has broken HTTP framing**: no `Content-Length`, not chunked, `Connection:
+- **Don't gate a UI value that needs to "tick" on its own periodic timer** if it's meant to be
+  independent of another timer (e.g. the wall clock) — two separate `millis()`-gated timers that
+  both reset to "now" each time they fire stay phase-locked forever regardless of being separate
+  variables, and a fixed offset between them is still just a workaround, not a fix. Recompute
+  from a real elapsed-time delta on every loop iteration instead (with a cheap no-op guard if the
+  displayed value hasn't changed), like `UiHandler.cpp`'s `refreshPlaybackClock()` does. See
+  item 9 above; the working reference for this pattern is
+  `~/Documents/dev/led-pi/volumio_widget.py`'s `draw()`.
+- **`/tinyart` has broken HTTP framing** (relevant only if album art is attempted again — not
+  currently in the codebase, see item 8): no `Content-Length`, not chunked, `Connection:
   Keep-Alive` claimed but the socket is actually closed after the body. `HTTPClient` on ESP32
-  can't handle this (silently reads 0 bytes) — `VolumioArt.cpp` talks to a raw `WiFiClient`
-  instead and reads until disconnect, with a timeout/size cap as a safety net.
-- **ESP32 heap capability mismatch**: `ESP.getFreeHeap()`/`ESP.getMaxAllocHeap()` (and plain
-  `malloc()`) don't necessarily reflect what's actually available for a generic byte buffer —
-  some free RAM may only be usable for other capabilities (e.g. IRAM/execute). Use
-  `heap_caps_malloc(size, MALLOC_CAP_8BIT)` + `heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)`
-  for trustworthy numbers when debugging allocation failures.
+  can't handle this (silently reads 0 bytes); a raw `WiFiClient` reading until disconnect worked.
+- **ESP32 heap capability mismatch** (also from the reverted album art work, but a general
+  lesson): `ESP.getFreeHeap()`/`ESP.getMaxAllocHeap()` (and plain `malloc()`) don't necessarily
+  reflect what's actually available for a generic byte buffer — some free RAM may only be usable
+  for other capabilities (e.g. IRAM/execute). Use `heap_caps_malloc(size, MALLOC_CAP_8BIT)` +
+  `heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)` for trustworthy numbers.
+- **Reserving big buffers early (before `WiFi.begin()`) isn't automatically safe** just because
+  it fixed one fragmentation problem (Library/Queue's arrays, and later `/tinyart`'s small
+  buffers) — WiFi's own connection-time allocations compete for that same early, "pristine" heap.
+  A later, bigger reservation (for HTTPS + JPEG decode buffers) starved it enough that WiFi never
+  connected at all. Measure actual headroom before assuming "early = safe."
 - **Colors look swapped on this display**: `COLOR_ACCENT` is defined as `0x1DB954` (green) but
   renders as blue on the physical screen. Never chased down why (likely a BGR/RGB or byte-order
   quirk in the `draw16bitBeRGBBitmap` path in `LvglHandler.cpp`); the user is fine with it, so it

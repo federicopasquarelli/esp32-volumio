@@ -9,7 +9,8 @@ void updateTime();
 lv_obj_t* addScreen(const char* name, void (*on_show)(void) = NULL);
 void updateVolumioUI(const char* title, const char* artist, const char* album, bool isPlaying, bool shuffle, bool repeat, bool repeatSingle, int elapsedSec, int durationSec);
 void updateVolumeUI(int volume);
-// Ticks the elapsed-time label forward by however long it's been since the last pushState.
-// Call once a second; a no-op until the first pushState has arrived.
+// Redraws the elapsed-time label from real time elapsed since the last pushState. Call every
+// loop() iteration, not on a timer (it no-ops unless the displayed second actually changed) —
+// a no-op until the first pushState has arrived either way.
 void tickPlaybackClock();
 #endif
