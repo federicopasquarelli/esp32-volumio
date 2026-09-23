@@ -2,6 +2,7 @@
 #include "arduino_secrets.h"
 #include "DisplayConfig.h"
 #include "VolumioHandler.h"
+#include "CustomFonts.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -248,6 +249,9 @@ void setupQueue(lv_obj_t* parent_tab) {
     lv_obj_set_style_bg_color(list_queue, lv_color_hex(0x000000), 0);
     lv_obj_set_style_border_width(list_queue, 0, 0);
     lv_obj_set_style_text_color(list_queue, lv_color_hex(0xAAAAAA), 0);
+    // Track names come straight from file tags, which often have accented letters or smart
+    // quotes the stock font doesn't have a glyph for -- see CustomFonts.h.
+    lv_obj_set_style_text_font(list_queue, &lv_font_montserrat_ext_14, 0);
 
     lv_obj_t* bar = lv_obj_create(tab_queue);
     lv_obj_set_size(bar, LV_PCT(100), QUEUE_ROW_H);

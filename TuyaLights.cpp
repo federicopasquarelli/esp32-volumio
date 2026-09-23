@@ -1,6 +1,7 @@
 #include "TuyaLights.h"
 #include "arduino_secrets.h"
 #include "DisplayConfig.h"
+#include "CustomFonts.h"
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -304,7 +305,7 @@ static void showList() {
 
         lv_obj_t* icon = lv_label_create(b);
         lv_label_set_text(icon, LV_SYMBOL_POWER);
-        lv_obj_set_style_text_font(icon, &lv_font_montserrat_32, 0);
+        lv_obj_set_style_text_font(icon, &lv_font_montserrat_ext_32, 0);
         lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 16);
 
         lv_obj_t* name = lv_label_create(b);
@@ -404,6 +405,9 @@ void setupTuyaLights(lv_obj_t* parent) {
     lv_obj_set_size(cont_lights, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_bg_color(cont_lights, lv_color_hex(0x000000), 0);
     lv_obj_set_style_border_width(cont_lights, 0, 0);
+    // Device names can have accented letters or smart quotes the stock font doesn't have a
+    // glyph for -- see CustomFonts.h. The icon label below overrides this with ext_32 anyway.
+    lv_obj_set_style_text_font(cont_lights, &lv_font_montserrat_ext_14, 0);
     lv_obj_set_style_pad_all(cont_lights, 12, 0);
     lv_obj_set_style_pad_column(cont_lights, 16, 0);
     lv_obj_set_style_pad_row(cont_lights, 16, 0);

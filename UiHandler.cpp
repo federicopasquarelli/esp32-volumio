@@ -1,7 +1,7 @@
 #include "UiHandler.h"
 #include "DisplayConfig.h"
 #include "VolumioHandler.h"
-#include "VolumioArt.h"
+#include "CustomFonts.h"
 #include <time.h>
 
 #define MAX_SCREENS 4
@@ -139,7 +139,7 @@ static void addMenuEntry(const char* name, lv_obj_t* target) {
     set_btn_inactive_style(menu_btn);
     lv_obj_add_event_cb(menu_btn, menu_item_cb, LV_EVENT_CLICKED, target);
     lv_obj_t* menu_label = lv_label_create(menu_btn);
-    lv_obj_set_style_text_font(menu_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(menu_label, &lv_font_montserrat_ext_18, 0);
     lv_label_set_text(menu_label, name);
     lv_obj_center(menu_label);
 }
@@ -149,7 +149,7 @@ void setupUI() {
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
 
     label_top = lv_label_create(scr);
-    lv_obj_set_style_text_font(label_top, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(label_top, &lv_font_montserrat_ext_18, 0);
     lv_obj_set_style_text_color(label_top, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(label_top, LV_ALIGN_TOP_LEFT, 10, 5);
 
@@ -168,7 +168,7 @@ void setupUI() {
     set_btn_inactive_style(btn_menu);
     lv_obj_add_event_cb(btn_menu, menu_toggle_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t* menu_icon = lv_label_create(btn_menu);
-    lv_obj_set_style_text_font(menu_icon, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(menu_icon, &lv_font_montserrat_ext_18, 0);
     lv_label_set_text(menu_icon, LV_SYMBOL_LIST);
     lv_obj_center(menu_icon);
 
@@ -235,36 +235,34 @@ void updateVolumioUI(const char* title, const char* artist, const char* album, b
     if (!label_title) {
         lv_obj_t* t1 = cont_player;
 
-        // Album art, top of the screen. 64x64 matches Volumio's "medium" tinyart size exactly,
-        // so nothing needs scaling. Falls back to a placeholder box when no real art is found.
-        setupAlbumArt(t1, 8, 6, 64, 64);
-
+        // Track info, top of the screen, left-aligned (no album art box anymore -- see
+        // CLAUDE.md item 8/17, tried and reverted twice).
         lv_obj_t* now_playing = lv_label_create(t1);
         lv_label_set_text(now_playing, "NOW PLAYING");
-        lv_obj_set_style_text_font(now_playing, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(now_playing, &lv_font_montserrat_ext_12, 0);
         lv_obj_set_style_text_color(now_playing, lv_color_hex(COLOR_ACCENT), 0);
-        lv_obj_set_pos(now_playing, 78, 4);
+        lv_obj_set_pos(now_playing, 8, 4);
 
         label_title = lv_label_create(t1);
         lv_label_set_long_mode(label_title, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-        lv_obj_set_width(label_title, 226);
-        lv_obj_set_style_text_font(label_title, &lv_font_montserrat_18, 0);
+        lv_obj_set_width(label_title, 296);
+        lv_obj_set_style_text_font(label_title, &lv_font_montserrat_ext_18, 0);
         lv_obj_set_style_text_color(label_title, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_pos(label_title, 78, 20);
+        lv_obj_set_pos(label_title, 8, 20);
 
         label_artist = lv_label_create(t1);
         lv_label_set_long_mode(label_artist, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-        lv_obj_set_width(label_artist, 226);
-        lv_obj_set_style_text_font(label_artist, &lv_font_montserrat_14, 0);
+        lv_obj_set_width(label_artist, 296);
+        lv_obj_set_style_text_font(label_artist, &lv_font_montserrat_ext_14, 0);
         lv_obj_set_style_text_color(label_artist, lv_color_hex(0xCCCCCC), 0);
-        lv_obj_set_pos(label_artist, 78, 42);
+        lv_obj_set_pos(label_artist, 8, 42);
 
         label_album = lv_label_create(t1);
         lv_label_set_long_mode(label_album, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-        lv_obj_set_width(label_album, 226);
-        lv_obj_set_style_text_font(label_album, &lv_font_montserrat_12, 0);
+        lv_obj_set_width(label_album, 296);
+        lv_obj_set_style_text_font(label_album, &lv_font_montserrat_ext_12, 0);
         lv_obj_set_style_text_color(label_album, lv_color_hex(0x888888), 0);
-        lv_obj_set_pos(label_album, 78, 60);
+        lv_obj_set_pos(label_album, 8, 60);
 
         // Transport row: shuffle, prev, play/pause (big, round), next, centered as a group.
         btn_shuffle = lv_button_create(t1);
@@ -291,7 +289,7 @@ void updateVolumioUI(const char* title, const char* artist, const char* album, b
         lv_obj_set_pos(btn_play, 129, 92);
         lv_obj_add_event_cb(btn_play, play_cb, LV_EVENT_CLICKED, NULL);
         btn_label = lv_label_create(btn_play);
-        lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_ext_18, 0);
         lv_obj_center(btn_label);
         set_btn_active_style(btn_play);
 

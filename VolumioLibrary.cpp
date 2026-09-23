@@ -5,6 +5,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include "VolumioHandler.h"
+#include "CustomFonts.h"
 
 #define LIB_ROOT_URI   "music-library"
 #define LIB_PAGE_SIZE  4
@@ -318,6 +319,7 @@ static void showContextMenu(const LibItem& item) {
     lv_obj_set_style_pad_row(menu, 0, 0);
     lv_obj_set_style_bg_color(menu, lv_color_hex(0x111111), 0);
     lv_obj_set_style_text_color(menu, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_set_style_text_font(menu, &lv_font_montserrat_ext_14, 0);
 
     lv_obj_t* title = lv_list_add_text(menu, item.title);
     lv_label_set_long_mode(title, LV_LABEL_LONG_MODE_DOTS);
@@ -422,6 +424,9 @@ void setupLibrary(lv_obj_t* parent_tab) {
     lv_obj_set_style_bg_color(list_library, lv_color_hex(0x000000), 0);
     lv_obj_set_style_border_width(list_library, 0, 0);
     lv_obj_set_style_text_color(list_library, lv_color_hex(0xAAAAAA), 0);
+    // Folder/track names come straight from file tags, which often have accented letters or
+    // smart quotes the stock font doesn't have a glyph for -- see CustomFonts.h.
+    lv_obj_set_style_text_font(list_library, &lv_font_montserrat_ext_14, 0);
 
     lv_obj_t* bar = lv_obj_create(tab_library);
     lv_obj_set_size(bar, LV_PCT(100), LIB_ROW_H);

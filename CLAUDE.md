@@ -36,11 +36,12 @@ also live in `arduino_secrets.h`, gitignored.
   update folder).
 - [VolumioQueue.cpp](VolumioQueue.cpp) — queue viewer/editor, HTTP via `/api/v1/getQueue` +
   `/api/v1/commands/?cmd=...`, per-item remove button.
-- [VolumioArt.cpp](VolumioArt.cpp) — currently just a static placeholder box (music-note icon on
-  an accent-colored square). Real artwork fetching was built, got working, then got reverted —
-  see item 8 below before attempting this again.
 - [DisplayConfig.h](DisplayConfig.h) — pins, screen dims, shared constants (`COLOR_ACCENT`,
   `TOP_BAR_H`, `SCREEN_TIMEOUT_MS`).
+- [CustomFonts.h](CustomFonts.h) + `font_montserrat_ext_{12,14,18,32}.c` — Montserrat fonts
+  regenerated with a wider glyph range than LVGL's stock ones (accented letters, smart
+  punctuation); see the quirks section below for why these exist and how to regenerate/resize
+  them.
 - [TuyaLights.cpp](TuyaLights.cpp) — "Lights" screen (dropdown entry, via `addScreen`).
   Authenticates against the Tuya Cloud API (`openapi.tuyaeu.com`, Simple mode signing), lists up
   to 5 devices (`/v2.0/cloud/thing/device?page_size=5`) with their live switch state
@@ -82,12 +83,13 @@ also live in `arduino_secrets.h`, gitignored.
 7. **Screen timeout**: backlight off after `SCREEN_TIMEOUT_MS` (3 min, `DisplayConfig.h`) with no
    touch; first touch after sleep just wakes the screen, doesn't also act as a press
    (`LvglHandler.cpp`, `my_touch_read`).
-8. **Album art: built, worked, then reverted to a placeholder.** None of this is in the codebase
-   now — kept here only so it isn't re-attempted the same way. Got real art working via Volumio's
-   `/tinyart/<artist>/<album>/small` for local files. Then extended it to also fetch plugin-sourced
-   art (Spotify etc, over HTTPS with a JPEG decoder) — **that extension broke WiFi connectivity
-   outright** (see quirks below). Per explicit user instruction, all of it was reverted, including
-   the previously-working `/tinyart` part, back to a plain static placeholder.
+8. **Album art, first attempt: built, worked, then reverted to a placeholder.** Kept here (rather
+   than deleted) because it explains a design choice item 17 made later. Got real art working via
+   Volumio's `/tinyart/<artist>/<album>/small` for local files. Then extended it to also fetch
+   plugin-sourced art (Spotify etc, over HTTPS with a JPEG decoder) — **that extension broke WiFi
+   connectivity outright** (see quirks below). Per explicit user instruction, all of it was
+   reverted, including the previously-working `/tinyart` part, back to a plain static placeholder.
+   Re-attempted later, see item 17 — this history is why it wasn't just redone the same way.
 9. **UI polish pass**: longer/thinner volume slider; playback time changed from two separate
    labels to one zero-padded `"03:04 / 04:30"` label, moved into the shared top header (visible
    from Library/Queue too, not just the player), centered between the clock and the dropdown/back
@@ -149,9 +151,59 @@ also live in `arduino_secrets.h`, gitignored.
     path, and if the screen is opened while that pre-auth is still running, the resulting list
     refresh isn't dropped -- it's queued (`pending_list_refresh`) and runs right after, same
     pattern as the existing queued-toggle (`pending_index`).
+17. **Album art, second attempt: also built, also reverted.** Not in the codebase now — kept here
+    so a third attempt doesn't repeat the same dead ends. This time the URL came from Volumio's
+    own pushState `albumart` field (verified live against the instance -- `curl
+    .../api/v1/getState` mirrors pushState exactly) instead of hand-building a `/tinyart/...` one:
+    local files turned out to resolve to a *different*, well-formed endpoint
+    (`/albumart?web=...&path=...`, confirmed with a real `Content-Length` header via `curl -I`),
+    sidestepping the broken-framing `/tinyart` quirk noted below entirely, and Spotify/SoundCloud
+    plugin art came through the same field as a plain external `https://` URL. Decoded with the
+    JPEGDEC library (bitbank2) straight from a RAM buffer into a 64x64 RGB565 image.
+    - **It did fail to compile at first**, but not from anything logically wrong: a fixed-size
+      `static uint16_t pixels[64*64]` (8KB) overflowed the chip's fixed-size static DRAM segment
+      at link time (`dram0_0_seg overflowed`) -- this chip's static-RAM budget was already tight
+      before adding it. Fixed by `malloc()`-ing that buffer once in `setupAlbumArt()` instead of
+      declaring it `static`, moving it to the heap (which had plenty of room left after item 11's
+      fix) -- worth remembering generally: a "small, one-time, fixed-size" buffer isn't
+      automatically safe as a `static` array on this chip; heap is the safer default here unless
+      there's a specific reason (like Library's per-page buffer) to want it static.
+    - **It compiled clean and presumably didn't hit the old "broke WiFi outright" failure mode**
+      (the two causes found earlier this session for similar HTTPS symptoms -- Library's old
+      49KB array, and the alpha core's broken TLS -- were both already fixed by this point) **but
+      still "didn't work" on real hardware**, per the user, who asked for a full revert without
+      further diagnosis. The exact on-device failure mode this time is unknown -- neither the
+      Serial log nor the specific symptom was captured before reverting.
+    - JPEGDEC (and its `bb_spi_lcd` dependency) was uninstalled again since nothing references it.
+18. **Album art placeholder removed too, not just the fetching.** After the second revert, the
+    static placeholder box itself (`VolumioArt.cpp`/`.h`, the music-note-on-accent-square) was
+    deleted from the project outright, per explicit request — the player screen has no album art
+    slot at all now. `UiHandler.cpp`'s track info (now-playing label, title/artist/album) moved
+    from starting at x=78 (to the right of where the art box used to be) to x=8, left-aligned
+    against the same margin the rest of the header uses, and widened from 226px to 296px to use
+    the freed horizontal space.
 
 ## Known quirks / gotchas worth remembering
 
+- **LVGL's compiled-in fonts are ASCII-only** — the stock Montserrat fonts (`lv_conf.h`, shared,
+  outside this repo) only cover code points 32-126 plus LVGL's own icon symbols (checked directly
+  in the compiled font source, `lv_font_montserrat_18.c`'s `cmaps[]`). No curly quotes, en/em
+  dashes, ellipsis, or accented Latin letters — all common in Volumio's metadata (title/artist/
+  album, library/queue item names, from properly-tagged files) — which then rendered as a
+  missing-glyph box on screen. First fixed with a text-rewriting workaround
+  (`sanitizeText()`, rewriting smart punctuation to ASCII lookalikes), then replaced with the
+  actual fix: `CustomFonts.h` declares 4 regenerated Montserrat fonts
+  (`lv_font_montserrat_ext_{12,14,18,32}`, in `font_montserrat_ext_*.c`) with the glyph range
+  extended to Latin-1 Supplement (accented letters) plus the specific smart-punctuation code
+  points, built with `lv_font_conv` (`npx lv_font_conv`) from the exact same source LVGL's own
+  bundled fonts use (`lvgl/scripts/generators/built_in_font/Montserrat-Medium.ttf` +
+  `built_in_font_gen.py`'s icon-symbol list), so they're visually identical to the stock fonts,
+  just with more glyphs. Adds roughly 250KB combined at the four sizes actually used — comfortably
+  within the ~1.5MB of free flash. Every `&lv_font_montserrat_NN` reference in the code was
+  swapped for `&lv_font_montserrat_ext_NN`, and every list/container showing external metadata
+  (`list_library`, `list_queue`, the Library long-press context menu, `cont_lights`) got an
+  explicit `lv_obj_set_style_text_font(..., &lv_font_montserrat_ext_14, 0)` so children inherit it
+  instead of falling back to `LV_FONT_DEFAULT` (still the stock, ASCII-only montserrat_14).
 - **Don't gate a UI value that needs to "tick" on its own periodic timer** if it's meant to be
   independent of another timer (e.g. the wall clock) — two separate `millis()`-gated timers that
   both reset to "now" each time they fire stay phase-locked forever regardless of being separate
