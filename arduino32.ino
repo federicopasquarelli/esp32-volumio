@@ -21,6 +21,9 @@ void setup() {
     setupVolumio();
     openLibraryRoot();
     refreshQueue();
+    // Placed last so NTP (configTzTime above) has had a moment to sync in the background --
+    // Tuya's request signing needs a roughly-correct clock.
+    startTuyaAuth();
 }
 void loop() {
     loopLVGL();

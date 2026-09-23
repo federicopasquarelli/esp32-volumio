@@ -129,6 +129,26 @@ also live in `arduino_secrets.h`, gitignored.
     between Library/Queue/Lights without detouring through the player. The player itself got a
     "Player" entry in the dropdown (`addMenuEntry()` in `UiHandler.cpp`, added right after
     `cont_player` in `setupUI()`) to replace what Back used to do.
+14. **Tuya token refresh.** Access tokens last 2h; `TuyaLights.cpp` now holds onto the
+    `refresh_token` from login and, once the cached access token is stale, calls
+    `GET /v1.0/token/{refresh_token}` (no `grant_type`, no `access_token` header) instead of
+    logging in from scratch — falling back to a full login only if that fails. Tuya's refresh
+    tokens are single-use, so every response (login or refresh) overwrites the stored one.
+    Separately, every authenticated call now goes through `tuyaCall()`, which retries once with a
+    forced-fresh token if Tuya answers with HTTP 401 — a safety net for a token going stale
+    between calls, not the main renewal path (that's `ensureToken()`'s expiry check, which is why
+    opening the Lights screen normally makes zero auth calls at all).
+15. **All `Serial.*` logging removed project-wide** (including `Serial.begin()`), per explicit
+    request. If you need runtime visibility again — e.g. to debug a new Tuya failure mode — you'll
+    need to re-add both.
+16. **Tuya pre-auth at boot.** `startTuyaAuth()` runs the login in the background right after
+    `setup()`'s WiFi/NTP work (placed last, so NTP has had a moment to sync -- signing needs a
+    roughly-correct clock), so opening the Lights screen for the first time only pays for the
+    device list/status calls, not a login too. Uses the same single-in-flight task machinery as
+    everything else in `TuyaLights.cpp` (`fetching`/`current_op = OP_AUTH`) rather than a separate
+    path, and if the screen is opened while that pre-auth is still running, the resulting list
+    refresh isn't dropped -- it's queued (`pending_list_refresh`) and runs right after, same
+    pattern as the existing queued-toggle (`pending_index`).
 
 ## Known quirks / gotchas worth remembering
 

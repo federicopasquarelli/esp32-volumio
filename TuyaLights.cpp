@@ -25,14 +25,16 @@ struct TuyaDevice {
 
 static lv_obj_t* cont_lights = NULL;
 
-// Cached across requests so we only re-authenticate once the token is close to expiring.
+// Cached across requests so we only touch the auth endpoints once the token is close to
+// expiring (access tokens last 2h) -- opening the Lights screen normally costs zero auth calls.
 static char access_token[64] = "";
+static char refresh_token[64] = "";
 static unsigned long token_expires_at_ms = 0;
 
 static TuyaDevice devices[TUYA_MAX_DEVICES];
 static int device_count = 0;
 
-enum TuyaOp { OP_LIST, OP_TOGGLE };
+enum TuyaOp { OP_AUTH, OP_LIST, OP_TOGGLE };
 static TuyaOp current_op;
 static int toggle_index = -1;
 static bool toggle_target = false;
@@ -95,9 +97,12 @@ static void buildSign(const char* method, const char* pathAndQuery, const char* 
 
 // Signed request against the Tuya Cloud API (GET when body is "", POST with a JSON body
 // otherwise). accessTokenForSign is also sent as the access_token header when non-NULL
-// (everything except the token endpoint itself).
+// (everything except the token endpoints themselves). httpCodeOut, if given, receives the raw
+// HTTP status (0 if the request never reached the server) -- tuyaCall() uses it to notice a 401
+// and retry with a fresh token.
 static bool tuyaRequest(const char* method, const char* pathAndQuery, const char* body,
-                         const char* accessTokenForSign, JsonDocument& doc, char* errOut, size_t errLen) {
+                         const char* accessTokenForSign, JsonDocument& doc, char* errOut, size_t errLen,
+                         int* httpCodeOut = NULL) {
     char sign[65], t[16];
     buildSign(method, pathAndQuery, body, accessTokenForSign, sign, t);
 
@@ -124,6 +129,7 @@ static bool tuyaRequest(const char* method, const char* pathAndQuery, const char
     } else {
         code = http.GET();
     }
+    if (httpCodeOut) *httpCodeOut = code;
 
     if (code != HTTP_CODE_OK) {
         if (code < 0) snprintf(errOut, errLen, "%s", http.errorToString(code).c_str());
@@ -151,27 +157,72 @@ static bool tuyaGet(const char* pathAndQuery, const char* accessTokenForSign, Js
     return tuyaRequest("GET", pathAndQuery, "", accessTokenForSign, doc, errOut, errLen);
 }
 
-// Fetches a fresh access token if we don't have one yet, or it's about to expire.
-static bool ensureToken(char* errOut, size_t errLen) {
-    if (access_token[0] && millis() < token_expires_at_ms) return true;
-
-    JsonDocument doc;
-    if (!tuyaGet("/v1.0/token?grant_type=1", NULL, doc, errOut, errLen)) return false;
-
+// Common to both the login and refresh responses: {"result":{"access_token","refresh_token",
+// "expire_time",...}}. The refresh_token Tuya hands back is itself single-use, so it always
+// replaces the one we had, from either call.
+static bool storeTokenResponse(JsonDocument& doc, char* errOut, size_t errLen) {
     const char* tok = doc["result"]["access_token"] | "";
     if (!tok[0]) {
         strlcpy(errOut, "No token in response", errLen);
         return false;
     }
     strlcpy(access_token, tok, sizeof(access_token));
+    strlcpy(refresh_token, doc["result"]["refresh_token"] | "", sizeof(refresh_token));
 
     long expireSec = doc["result"]["expire_time"] | 0;
-    unsigned long marginMs = 60000;  // refresh a bit early rather than racing the exact expiry
+    unsigned long marginMs = 60000;  // renew a bit early rather than racing the exact expiry
     unsigned long lifetimeMs = (unsigned long)expireSec * 1000UL;
     if (lifetimeMs > marginMs) lifetimeMs -= marginMs;
     token_expires_at_ms = millis() + lifetimeMs;
-
     return true;
+}
+
+// Full login (Simple mode signing, no access_token). Only needed the very first time, or as a
+// fallback if refreshAccessToken() fails (e.g. the refresh_token was already used, or never
+// existed).
+static bool authenticateFresh(char* errOut, size_t errLen) {
+    JsonDocument doc;
+    if (!tuyaGet("/v1.0/token?grant_type=1", NULL, doc, errOut, errLen)) return false;
+    return storeTokenResponse(doc, errOut, errLen);
+}
+
+// https://developer.tuya.com/en/docs/cloud/80bb968f1d -- GET /v1.0/token/{refresh_token}, no
+// grant_type, no access_token header (same as the login call). Cheaper than a fresh login and
+// the whole point of holding a refresh_token: the access token expires every 2h, and without
+// this every renewal would otherwise fall back to a full login.
+static bool refreshAccessToken(char* errOut, size_t errLen) {
+    if (!refresh_token[0]) return false;
+    char path[96];
+    snprintf(path, sizeof(path), "/v1.0/token/%s", refresh_token);
+    JsonDocument doc;
+    if (!tuyaGet(path, NULL, doc, errOut, errLen)) return false;
+    return storeTokenResponse(doc, errOut, errLen);
+}
+
+// Gets us a usable access token: the cached one if it's still fresh, otherwise a refresh, falling
+// back to a full login if refreshing didn't work (or there was nothing to refresh yet).
+static bool ensureToken(char* errOut, size_t errLen) {
+    if (access_token[0] && millis() < token_expires_at_ms) return true;
+    if (refreshAccessToken(errOut, errLen)) return true;
+    return authenticateFresh(errOut, errLen);
+}
+
+// Runs a signed, authenticated call: makes sure we have a token, sends the request, and if Tuya
+// rejects it with 401 (token revoked, clock skew, refreshed elsewhere -- ensureToken() already
+// keeps it fresh in the common case, so this is the rare-case safety net) forces a new one and
+// retries exactly once, rather than surfacing the failure to the user.
+static bool tuyaCall(const char* method, const char* pathAndQuery, const char* body,
+                      JsonDocument& doc, char* errOut, size_t errLen) {
+    if (!ensureToken(errOut, errLen)) return false;
+
+    int httpCode = 0;
+    if (tuyaRequest(method, pathAndQuery, body, access_token, doc, errOut, errLen, &httpCode)) return true;
+    if (httpCode != 401) return false;
+
+    access_token[0] = '\0';  // don't let ensureToken() think this one's still good
+    if (!ensureToken(errOut, errLen)) return false;
+    doc.clear();
+    return tuyaRequest(method, pathAndQuery, body, access_token, doc, errOut, errLen, &httpCode);
 }
 
 // Same active/inactive language as the player's shuffle/repeat buttons: solid accent when on,
@@ -212,12 +263,14 @@ static void showError(const char* error) {
 
 static void startTask();
 
-// A tap that lands while another request is still in flight isn't dropped -- it's remembered
-// here and fired the moment that request finishes (loopTuyaLights()), so flipping two lights in
-// quick succession doesn't require tapping the second one twice. Only one request runs at a
-// time on purpose: this core's TLS handshake needs a big contiguous heap block (see the TLS
-// quirk in CLAUDE.md), and running two at once risks starving it again.
+// A tap (or screen open) that lands while another request is still in flight isn't dropped --
+// it's remembered here and fired the moment that request finishes (loopTuyaLights()). Covers two
+// cases: flipping two lights in quick succession without tapping the second one twice, and
+// opening the Lights screen while the boot-time pre-auth (startTuyaAuth()) is still running.
+// Only one request runs at a time on purpose: this core's TLS handshake needs a big contiguous
+// heap block (see the TLS quirk in CLAUDE.md), and running two at once risks starving it again.
 static int pending_index = -1;
+static bool pending_list_refresh = false;
 
 static void startToggle(int idx) {
     current_op = OP_TOGGLE;
@@ -269,7 +322,7 @@ static bool fetchDeviceList(char* errOut, size_t errLen) {
     device_count = 0;
 
     JsonDocument doc;
-    if (!tuyaGet("/v2.0/cloud/thing/device?page_size=5", access_token, doc, errOut, errLen)) return false;
+    if (!tuyaCall("GET", "/v2.0/cloud/thing/device?page_size=5", "", doc, errOut, errLen)) return false;
 
     // Tuya's device-list shape has moved around across API versions -- accept either "result"
     // being the array directly (confirmed live), or "result.list" wrapping it.
@@ -289,7 +342,7 @@ static bool fetchDeviceList(char* errOut, size_t errLen) {
         snprintf(path, sizeof(path), "/v1.0/iot-03/devices/%s/status", devices[i].id);
         JsonDocument statusDoc;
         char statusErr[48];
-        if (!tuyaGet(path, access_token, statusDoc, statusErr, sizeof(statusErr))) continue;
+        if (!tuyaCall("GET", path, "", statusDoc, statusErr, sizeof(statusErr))) continue;
         for (JsonObject s : statusDoc["result"].as<JsonArray>()) {
             if (strcmp(s["code"] | "", TUYA_SWITCH_CODE) == 0) {
                 devices[i].on = s["value"] | false;
@@ -313,7 +366,7 @@ static bool sendToggle(int idx, bool target, char* errOut, size_t errLen) {
     serializeJson(body, payload);
 
     JsonDocument respDoc;
-    if (!tuyaRequest("POST", path, payload.c_str(), access_token, respDoc, errOut, errLen)) return false;
+    if (!tuyaCall("POST", path, payload.c_str(), respDoc, errOut, errLen)) return false;
 
     devices[idx].on = target;
     return true;
@@ -322,12 +375,12 @@ static bool sendToggle(int idx, bool target, char* errOut, size_t errLen) {
 static void fetchTask(void*) {
     fetch_error[0] = '\0';
 
-    if (ensureToken(fetch_error, sizeof(fetch_error))) {
-        if (current_op == OP_LIST) {
-            fetchDeviceList(fetch_error, sizeof(fetch_error));
-        } else if (toggle_index >= 0 && toggle_index < device_count) {
-            sendToggle(toggle_index, toggle_target, fetch_error, sizeof(fetch_error));
-        }
+    if (current_op == OP_AUTH) {
+        ensureToken(fetch_error, sizeof(fetch_error));
+    } else if (current_op == OP_LIST) {
+        fetchDeviceList(fetch_error, sizeof(fetch_error));
+    } else if (toggle_index >= 0 && toggle_index < device_count) {
+        sendToggle(toggle_index, toggle_target, fetch_error, sizeof(fetch_error));
     }
 
     fetch_done = true;
@@ -359,9 +412,21 @@ void setupTuyaLights(lv_obj_t* parent) {
     lv_obj_set_flex_align(cont_lights, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 }
 
-void refreshTuyaLights() {
+void startTuyaAuth() {
     if (fetching) return;
+    current_op = OP_AUTH;
+    startTask();
+}
+
+void refreshTuyaLights() {
     pending_index = -1;  // a fresh full reload supersedes any toggle queued from before
+    if (fetching) {
+        // Something's already in flight -- almost certainly the boot-time pre-auth. Don't drop
+        // this: run it the moment that finishes instead (see loopTuyaLights()).
+        pending_list_refresh = true;
+        setStatus(LV_SYMBOL_REFRESH " Loading...");
+        return;
+    }
     current_op = OP_LIST;
     setStatus(LV_SYMBOL_REFRESH " Loading...");
     startTask();
@@ -372,10 +437,19 @@ void loopTuyaLights() {
     fetch_done = false;
     fetching = false;
 
-    if (fetch_error[0]) showError(fetch_error);
-    else showList();
+    // OP_AUTH never touches devices[]/the screen -- nothing to render, whether it succeeded or
+    // not (a failure here just means the next real call pays for authenticating itself).
+    if (current_op != OP_AUTH) {
+        if (fetch_error[0]) showError(fetch_error);
+        else showList();
+    }
 
-    if (pending_index >= 0) {
+    if (pending_list_refresh) {
+        pending_list_refresh = false;
+        current_op = OP_LIST;
+        setStatus(LV_SYMBOL_REFRESH " Loading...");
+        startTask();
+    } else if (pending_index >= 0) {
         int idx = pending_index;
         pending_index = -1;
         if (idx < device_count) startToggle(idx);
