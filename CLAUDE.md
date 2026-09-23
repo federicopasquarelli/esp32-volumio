@@ -14,9 +14,11 @@ queue management, album art).
 Board used for testing: connected via USB at `/dev/ttyUSB0` (CH341 adapter), FQBN
 `esp32:esp32:esp32:PartitionScheme=huge_app` — **the default partition scheme is too small**
 (sketch is ~50% of flash with huge_app, but 118%+ of the default scheme), always compile/upload
-with `PartitionScheme=huge_app` or it'll fail to fit.
+with `PartitionScheme=huge_app` or it'll fail to fit. ESP32 core: pinned to **`esp32:esp32@3.3.11`**
+— do not upgrade to the `4.0.0-alpha1` core, its TLS stack is broken (see quirks below).
 
-Volumio host for dev: `volumio.local:3000` (see `arduino_secrets.h`, gitignored).
+Volumio host for dev: `volumio.local:3000`. Tuya Developer Platform credentials (client ID/key)
+also live in `arduino_secrets.h`, gitignored.
 
 ## File map
 
@@ -39,6 +41,11 @@ Volumio host for dev: `volumio.local:3000` (see `arduino_secrets.h`, gitignored)
   see item 8 below before attempting this again.
 - [DisplayConfig.h](DisplayConfig.h) — pins, screen dims, shared constants (`COLOR_ACCENT`,
   `TOP_BAR_H`, `SCREEN_TIMEOUT_MS`).
+- [TuyaLights.cpp](TuyaLights.cpp) — "Lights" screen (dropdown entry, via `addScreen`).
+  Authenticates against the Tuya Cloud API (`openapi.tuyaeu.com`, Simple mode signing), lists up
+  to 5 devices (`/v2.0/cloud/thing/device?page_size=5`) with their live switch state
+  (`GET .../status`, code `switch_led`) on screen-open, and tapping one toggles it
+  (`POST .../commands`). No unlink/remove action, by design.
 
 ## Session history (chronological, most recent last)
 
@@ -86,6 +93,42 @@ Volumio host for dev: `volumio.local:3000` (see `arduino_secrets.h`, gitignored)
    from Library/Queue too, not just the player), centered between the clock and the dropdown/back
    button. Getting the elapsed time itself to tick correctly took a few tries — see the timer
    quirk below.
+10. **Tuya Lights screen started.** Added an empty "Lights" screen + dropdown entry
+    (`TuyaLights.cpp`), then implemented Tuya Cloud API authentication (`GET
+    /v1.0/token?grant_type=1`, HMAC-SHA256 "Simple mode" signing per Tuya's docs) on screen-open.
+    Signing was correct from the start; what actually blocked it was the ESP32 core version — see
+    the TLS quirk below. Downgraded the installed core from `esp32:esp32@4.0.0-alpha1` to the
+    stable `@3.3.11` to fix it. Once auth worked, added the device list
+    (`/v2.0/cloud/thing/device?page_size=5`), then on/off control: the list endpoint turned out to
+    have no live status, so each device's switch state is fetched separately
+    (`GET /v1.0/iot-03/devices/{id}/status`, code `switch_led` -- confirmed by calling the real
+    API read-only from a throwaway script rather than trusting Tuya's docs, which were
+    inconsistently rendered when fetched). Tapping a row sends
+    `POST /v1.0/iot-03/devices/{id}/commands` with that same code and updates the row from the
+    response, not optimistically.
+11. **Library switched from "fetch whole folder" to "fetch per page."** Chasing the TLS memory
+    failure above (`SSL - Memory allocation failed`, 13.8KB largest free block vs the ~32KB TLS
+    needs) surfaced that `VolumioLibrary.cpp` reserved a static 200-item array (~49KB) at boot,
+    just to paginate 4 items/page client-side out of something already fully downloaded — heap
+    fragmentation from that array was most of the deficit. Confirmed Volumio's `/api/v1/browse`
+    actually supports `offset`/`limit` query params (tested directly against `volumio.local`), so
+    Library now does one HTTP fetch per page turn instead: `items[]` shrank to a 4-slot static
+    array (no more heap `new[]`), and `has_more` (was the last fetch a full page?) replaces the
+    old total-based `pageCount()` for enabling the Next button — this can be a false positive
+    right when a folder's item count is an exact multiple of 4 (Next loads one harmless empty
+    page), see the comment above `has_more` in `VolumioLibrary.cpp`.
+12. **Lights UI**: devices became two big (130x130) centered buttons instead of list rows —
+    accent-filled when on, black with an accent border when off (same on/off language as the
+    player's shuffle/repeat buttons, `styleDeviceButton` in `TuyaLights.cpp`). Tapping a light
+    while another request is still in flight no longer drops the tap: it's queued
+    (`pending_index`) and fires automatically once the in-flight one finishes, so flipping two
+    lights in quick succession doesn't need a second tap — but it's still one request at a time on
+    purpose (this core's TLS needs a big contiguous heap block, see the TLS quirk below).
+13. **Back button removed.** The dropdown menu button is now always visible on every screen (used
+    to be player-only, with a Back button replacing it everywhere else) so you can jump straight
+    between Library/Queue/Lights without detouring through the player. The player itself got a
+    "Player" entry in the dropdown (`addMenuEntry()` in `UiHandler.cpp`, added right after
+    `cont_player` in `setupUI()`) to replace what Back used to do.
 
 ## Known quirks / gotchas worth remembering
 
@@ -122,3 +165,13 @@ Volumio host for dev: `volumio.local:3000` (see `arduino_secrets.h`, gitignored)
   to paste what their monitor shows, or ask before taking the port.
 - **`arduino-cli upload` fails with "port busy"** whenever Arduino IDE's monitor (or anything
   else) has the port open — same reasoning as above, ask first.
+- **ESP32 core `4.0.0-alpha1`'s TLS is broken — every outbound HTTPS handshake fails**, not just
+  to a specific host. Root-caused while building Tuya auth (item 10): DNS and raw TCP connect to
+  port 443 both succeed, but the TLS handshake itself fails identically against Tuya's API *and*
+  a control host (google.com), with an mbedtls error code (`0080:000D`) that the core's own
+  `mbedtls_strerror()` can't even decode — this core is mid-transition to a new "tf-psa-crypto"
+  backend, and `NetworkClientSecure`/`WiFiClientSecure` never calls the now-required
+  `psa_crypto_init()` (confirmed: calling it explicitly first still didn't fix the handshake, so
+  it runs deeper than that). Fixed by downgrading to the stable `esp32:esp32@3.3.11` core instead
+  of chasing it further — don't reinstall the alpha core, and if a *different* HTTPS target ever
+  fails, check `arduino-cli core list` before assuming it's a code bug.

@@ -39,7 +39,6 @@ static bool httpGet(const char* path) {
     http.begin(client, apiUrl(path));
     http.setTimeout(8000);
     int code = http.GET();
-    Serial.printf("[Queue] GET %s -> %d\n", path, code);
     http.end();
     return code == HTTP_CODE_OK;
 }
@@ -52,7 +51,6 @@ static bool fetchQueue() {
 
     int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        Serial.printf("[Queue] getQueue failed: %d\n", code);
         strlcpy(op_error, "Request failed", sizeof(op_error));
         http.end();
         return false;
@@ -67,7 +65,6 @@ static bool fetchQueue() {
     DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
     http.end();
     if (err) {
-        Serial.printf("[Queue] JSON error: %s\n", err.c_str());
         strlcpy(op_error, "Invalid response", sizeof(op_error));
         return false;
     }
@@ -81,7 +78,6 @@ static bool fetchQueue() {
         else strlcpy(titles[item_count], name, QUEUE_TITLE_LEN);
         item_count++;
     }
-    Serial.printf("[Queue] %d tracks\n", item_count);
     return true;
 }
 

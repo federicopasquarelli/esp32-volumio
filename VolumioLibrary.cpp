@@ -7,7 +7,6 @@
 #include "VolumioHandler.h"
 
 #define LIB_ROOT_URI   "music-library"
-#define LIB_MAX_ITEMS  200
 #define LIB_PAGE_SIZE  4
 #define LIB_ROW_H      34
 #define LIB_MAX_DEPTH  12
@@ -29,8 +28,15 @@ static lv_obj_t* btn_next_page = NULL;
 static lv_obj_t* label_page = NULL;
 static int page = 0;
 
-static LibItem* items = NULL;
+// Only the page currently on screen is ever held in RAM -- Volumio's browse API takes
+// offset/limit, so paging is a fresh HTTP request per page rather than one big fetch cached
+// client-side (that used to reserve a 200-item array, ~49KB, permanently at boot).
+static LibItem items[LIB_PAGE_SIZE];
 static int item_count = 0;
+// True if the last fetch returned a full page, i.e. there's probably a next page. Can be a false
+// positive when the folder has exactly a multiple of LIB_PAGE_SIZE items (Next then loads an
+// empty page) -- harmless, Prev still gets you back.
+static bool has_more = false;
 
 // URIs of the folders we entered, the last one is the folder being shown.
 static char path_stack[LIB_MAX_DEPTH][LIB_URI_LEN];
@@ -43,6 +49,7 @@ static int pending_page = 0;
 static volatile bool fetching = false;
 static volatile bool fetch_done = false;
 static char fetch_uri[LIB_URI_LEN];
+static int fetch_page = 0;
 static char fetch_error[32];
 
 // Kept alive between requests so we skip the TCP handshake each time.
@@ -74,14 +81,14 @@ static void fetchTask(void*) {
     fetch_error[0] = '\0';
 
     String url = String("http://") + SECRET_VOLUMIO_HOST + ":" + SECRET_VOLUMIO_PORT +
-                 "/api/v1/browse?uri=" + urlEncode(fetch_uri);
+                 "/api/v1/browse?uri=" + urlEncode(fetch_uri) +
+                 "&offset=" + String(fetch_page * LIB_PAGE_SIZE) + "&limit=" + String(LIB_PAGE_SIZE);
     http.setReuse(true);
     http.setTimeout(8000);
     http.begin(wifi_client, url);
 
     int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        Serial.printf("[Library] GET %s failed: %d\n", fetch_uri, code);
         strlcpy(fetch_error, "Request failed", sizeof(fetch_error));
     } else {
         JsonDocument filter;
@@ -93,13 +100,12 @@ static void fetchTask(void*) {
         JsonDocument doc;
         DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
         if (err) {
-            Serial.printf("[Library] JSON error: %s\n", err.c_str());
             strlcpy(fetch_error, "Invalid response", sizeof(fetch_error));
         } else {
             item_count = 0;
             for (JsonObject list : doc["navigation"]["lists"].as<JsonArray>()) {
                 for (JsonObject it : list["items"].as<JsonArray>()) {
-                    if (item_count >= LIB_MAX_ITEMS) break;
+                    if (item_count >= LIB_PAGE_SIZE) break;
                     LibItem& dst = items[item_count++];
                     strlcpy(dst.title, it["title"] | "", sizeof(dst.title));
                     strlcpy(dst.uri, it["uri"] | "", sizeof(dst.uri));
@@ -107,7 +113,7 @@ static void fetchTask(void*) {
                     dst.isFolder = isFolderType(it["type"] | "");
                 }
             }
-            Serial.printf("[Library] %s: %d items\n", fetch_uri, item_count);
+            has_more = (item_count == LIB_PAGE_SIZE);
         }
     }
 
@@ -117,10 +123,11 @@ static void fetchTask(void*) {
     vTaskDelete(NULL);
 }
 
-static void startFetch(const char* uri) {
+static void startFetch(const char* uri, int pageToFetch) {
     if (fetching) return;
     fetching = true;
     strlcpy(fetch_uri, uri, sizeof(fetch_uri));
+    fetch_page = pageToFetch;
     xTaskCreatePinnedToCore(fetchTask, "LibFetch", 8192, NULL, 1, NULL, 1);
 }
 
@@ -129,21 +136,17 @@ static void setEnabled(lv_obj_t* obj, bool enabled) {
     else lv_obj_add_state(obj, LV_STATE_DISABLED);
 }
 
-static int pageCount() {
-    int pages = (item_count + LIB_PAGE_SIZE - 1) / LIB_PAGE_SIZE;
-    return pages > 0 ? pages : 1;
-}
-
-// listing is false while loading or showing an error, when paging makes no sense.
+// listing is false while loading or showing an error, when paging makes no sense. There's no
+// running page total anymore (each page is its own fetch, not a slice of something already in
+// full), so this just shows the current page number.
 static void updateNav(bool listing) {
-    int pages = pageCount();
-    char txt[16];
-    if (listing) snprintf(txt, sizeof(txt), "%d/%d", page + 1, pages);
+    char txt[8];
+    if (listing) snprintf(txt, sizeof(txt), "%d", page + 1);
     else strlcpy(txt, "-", sizeof(txt));
     lv_label_set_text(label_page, txt);
     setEnabled(btn_up, path_depth > 1);
     setEnabled(btn_prev_page, listing && page > 0);
-    setEnabled(btn_next_page, listing && page < pages - 1);
+    setEnabled(btn_next_page, listing && has_more);
 }
 
 static void setStatus(const char* text) {
@@ -159,7 +162,7 @@ static void enterFolder(const char* uri) {
     strlcpy(path_stack[path_depth], uri, LIB_URI_LEN);
     path_depth++;
     setStatus(LV_SYMBOL_REFRESH " Loading...");
-    startFetch(uri);
+    startFetch(uri, pending_page);
 }
 
 static void goBack() {
@@ -167,13 +170,15 @@ static void goBack() {
     path_depth--;
     pending_page = page_stack[path_depth - 1];
     setStatus(LV_SYMBOL_REFRESH " Loading...");
-    startFetch(path_stack[path_depth - 1]);
+    startFetch(path_stack[path_depth - 1], pending_page);
 }
 
+// Retries at whatever page the failed fetch was targeting -- pending_page still holds it,
+// untouched since the fetch that set it never made it to the loopLibrary() success path.
 static void retry_cb(lv_event_t*) {
     if (fetching || path_depth == 0) return;
     setStatus(LV_SYMBOL_REFRESH " Loading...");
-    startFetch(path_stack[path_depth - 1]);
+    startFetch(path_stack[path_depth - 1], pending_page);
 }
 
 static void styleButton(lv_obj_t* btn) {
@@ -212,7 +217,6 @@ static int postJson(const char* path, const JsonDocument& body) {
     String payload;
     serializeJson(body, payload);
     int code = req.POST(payload);
-    Serial.printf("[Library] POST %s -> %d\n", path, code);
     req.end();
     return code;
 }
@@ -261,7 +265,7 @@ static void folderActionTask(void* pv) {
                 HTTPClient req;
                 req.begin(client, baseUrl() + "commands/?cmd=play&N=" + String(first));
                 req.setTimeout(8000);
-                Serial.printf("[Library] play N=%d -> %d\n", first, req.GET());
+                req.GET();
                 req.end();
             }
             break;
@@ -282,7 +286,6 @@ static void startAction(int action, const LibItem& item) {
 
 static void menu_action_cb(lv_event_t* e) {
     int action = (int)(intptr_t)lv_event_get_user_data(e);
-    Serial.printf("[Library] Menu action %d on '%s'\n", action, menu_item.uri);
     if (action == ACTION_UPDATE) {
         // Volumio has no REST route for a database update, so this one uses the WebSocket.
         updateFolder(menu_item.uri);
@@ -350,13 +353,12 @@ static void track_cb(lv_event_t* e) {
     if (idx >= 0 && idx < item_count) startAction(ACTION_PLAY, items[idx]);
 }
 
-// Only the current page is turned into widgets, so a huge folder costs no more than a small one.
+// items[] only ever holds the page just fetched (server-side offset/limit already did the
+// slicing), so this just renders all of it.
 static void showList() {
     lv_obj_clean(list_library);
 
-    int first = page * LIB_PAGE_SIZE;
-    int last = min(first + LIB_PAGE_SIZE, item_count);
-    for (int i = first; i < last; i++) {
+    for (int i = 0; i < item_count; i++) {
         bool folder = items[i].isFolder;
         lv_obj_t* b = lv_list_add_button(list_library, folder ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_AUDIO, items[i].title);
         styleButton(b);
@@ -372,8 +374,20 @@ static void showList() {
 }
 
 static void up_cb(lv_event_t*) { goBack(); }
-static void prev_page_cb(lv_event_t*) { if (!fetching && page > 0) { page--; showList(); } }
-static void next_page_cb(lv_event_t*) { if (!fetching && page < pageCount() - 1) { page++; showList(); } }
+
+static void prev_page_cb(lv_event_t*) {
+    if (fetching || page <= 0) return;
+    pending_page = page - 1;
+    setStatus(LV_SYMBOL_REFRESH " Loading...");
+    startFetch(path_stack[path_depth - 1], pending_page);
+}
+
+static void next_page_cb(lv_event_t*) {
+    if (fetching || !has_more) return;
+    pending_page = page + 1;
+    setStatus(LV_SYMBOL_REFRESH " Loading...");
+    startFetch(path_stack[path_depth - 1], pending_page);
+}
 
 static lv_obj_t* addNavButton(lv_obj_t* bar, const char* symbol, lv_event_cb_t cb) {
     lv_obj_t* b = lv_button_create(bar);
@@ -395,7 +409,6 @@ static lv_obj_t* addNavButton(lv_obj_t* bar, const char* symbol, lv_event_cb_t c
 
 void setupLibrary(lv_obj_t* parent_tab) {
     tab_library = parent_tab;
-    items = new LibItem[LIB_MAX_ITEMS];
 
     lv_obj_remove_flag(tab_library, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(tab_library, 0, 0);
@@ -453,7 +466,6 @@ void loopLibrary() {
         showError(fetch_error);
     } else {
         page = pending_page;
-        if (page >= pageCount()) page = pageCount() - 1;
         showList();
     }
     fetching = false;

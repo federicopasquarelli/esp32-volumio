@@ -6,7 +6,7 @@
 
 #define MAX_SCREENS 4
 
-static lv_obj_t *label_top, *cont_player, *btn_menu, *menu_list, *btn_back, *label_title, *label_artist, *label_album;
+static lv_obj_t *label_top, *cont_player, *btn_menu, *menu_list, *label_title, *label_artist, *label_album;
 static lv_obj_t *label_elapsed, *label_volume;
 static lv_obj_t *btn_play, *btn_label, *btn_prev, *btn_next, *btn_shuffle, *btn_repeat;
 static lv_obj_t *slider_volume;
@@ -114,16 +114,8 @@ static void showScreen(lv_obj_t* target) {
     }
     lv_obj_remove_flag(target, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(menu_list, LV_OBJ_FLAG_HIDDEN);
-    // Top right shows the dropdown on the player screen, and a Back button everywhere else.
-    bool is_player = (target == cont_player);
-    if (is_player) lv_obj_remove_flag(btn_menu, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(btn_menu, LV_OBJ_FLAG_HIDDEN);
-    if (is_player) lv_obj_add_flag(btn_back, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_remove_flag(btn_back, LV_OBJ_FLAG_HIDDEN);
     if (on_show) on_show();
 }
-
-static void back_cb(lv_event_t*) { showScreen(cont_player); }
 
 static void menu_toggle_cb(lv_event_t*) {
     if (lv_obj_has_flag(menu_list, LV_OBJ_FLAG_HIDDEN)) {
@@ -139,6 +131,19 @@ static void menu_item_cb(lv_event_t* e) {
     showScreen((lv_obj_t*)lv_event_get_user_data(e));
 }
 
+// One row in the dropdown, navigating to target when tapped. Used both for the Player entry and
+// for every screen registered via addScreen().
+static void addMenuEntry(const char* name, lv_obj_t* target) {
+    lv_obj_t* menu_btn = lv_button_create(menu_list);
+    lv_obj_set_size(menu_btn, LV_PCT(100), 38);
+    set_btn_inactive_style(menu_btn);
+    lv_obj_add_event_cb(menu_btn, menu_item_cb, LV_EVENT_CLICKED, target);
+    lv_obj_t* menu_label = lv_label_create(menu_btn);
+    lv_obj_set_style_text_font(menu_label, &lv_font_montserrat_18, 0);
+    lv_label_set_text(menu_label, name);
+    lv_obj_center(menu_label);
+}
+
 void setupUI() {
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
@@ -148,44 +153,35 @@ void setupUI() {
     lv_obj_set_style_text_color(label_top, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(label_top, LV_ALIGN_TOP_LEFT, 10, 5);
 
-    // Elapsed / duration, top center, between the clock and the dropdown/back button. Lives in
-    // the shared header (like the clock) rather than the player screen's own content, so it's
+    // Elapsed / duration, top center, between the clock and the dropdown toggle. Lives in the
+    // shared header (like the clock) rather than the player screen's own content, so it's
     // visible from Library/Queue too.
     label_elapsed = lv_label_create(scr);
     lv_obj_set_style_text_color(label_elapsed, lv_color_hex(0xAAAAAA), 0);
     lv_obj_align(label_elapsed, LV_ALIGN_TOP_MID, 0, 8);
 
-    // Menu button, top right, level with the time. Only shown on the player screen, it's how
-    // you leave it for Library/Queue. The Back button below takes its place everywhere else.
+    // Menu button, top right, level with the time. Always visible, on every screen, so you can
+    // jump straight from e.g. Library to Queue without detouring through the player first.
     btn_menu = lv_button_create(scr);
-    lv_obj_set_size(btn_menu, 36, 22);
-    lv_obj_align(btn_menu, LV_ALIGN_TOP_RIGHT, -10, 5);
+    lv_obj_set_size(btn_menu, 46, 28);
+    lv_obj_align(btn_menu, LV_ALIGN_TOP_RIGHT, -10, 4);
     set_btn_inactive_style(btn_menu);
     lv_obj_add_event_cb(btn_menu, menu_toggle_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t* menu_icon = lv_label_create(btn_menu);
+    lv_obj_set_style_text_font(menu_icon, &lv_font_montserrat_18, 0);
     lv_label_set_text(menu_icon, LV_SYMBOL_LIST);
     lv_obj_center(menu_icon);
 
-    // Back button, same top-right spot as the menu button, shown only on Library/Queue.
-    btn_back = lv_button_create(scr);
-    lv_obj_set_size(btn_back, 36, 22);
-    lv_obj_align(btn_back, LV_ALIGN_TOP_RIGHT, -10, 5);
-    set_btn_active_style(btn_back);
-    lv_obj_add_event_cb(btn_back, back_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t* back_icon = lv_label_create(btn_back);
-    lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
-    lv_obj_center(back_icon);
-    lv_obj_add_flag(btn_back, LV_OBJ_FLAG_HIDDEN);
-
-    // Dropdown panel, one entry per screen registered with addScreen(). Hidden until tapped.
+    // Dropdown panel, one entry per screen registered with addScreen(), plus "Player" itself.
+    // Hidden until tapped.
     menu_list = lv_obj_create(scr);
-    lv_obj_set_size(menu_list, 120, LV_SIZE_CONTENT);
+    lv_obj_set_size(menu_list, 150, LV_SIZE_CONTENT);
     lv_obj_align_to(menu_list, btn_menu, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 4);
     lv_obj_set_style_bg_color(menu_list, lv_color_hex(0x111111), 0);
     lv_obj_set_style_border_color(menu_list, lv_color_hex(COLOR_ACCENT), 0);
     lv_obj_set_style_border_width(menu_list, 1, 0);
     lv_obj_set_style_pad_all(menu_list, 4, 0);
-    lv_obj_set_style_pad_row(menu_list, 4, 0);
+    lv_obj_set_style_pad_row(menu_list, 6, 0);
     lv_obj_remove_flag(menu_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(menu_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_add_flag(menu_list, LV_OBJ_FLAG_HIDDEN);
@@ -199,6 +195,9 @@ void setupUI() {
     lv_obj_set_style_border_width(cont_player, 0, 0);
     lv_obj_set_style_pad_all(cont_player, 0, 0);
     lv_obj_remove_flag(cont_player, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Player's own dropdown entry, now that there's no dedicated Back button to return to it.
+    addMenuEntry("Player", cont_player);
 }
 
 void updateTime() {
@@ -210,8 +209,8 @@ void updateTime() {
 }
 
 lv_obj_t* addScreen(const char* name, void (*on_show)(void)) {
-    // Its own Back button lives in the shared top bar (see btn_back), so the screen is plain
-    // content filling the space below it, same geometry the player screen uses.
+    // The dropdown (see addMenuEntry) is how every screen is reached, so this is plain content
+    // filling the space below the top bar, same geometry the player screen uses.
     lv_obj_t* screen = lv_obj_create(lv_screen_active());
     lv_obj_set_pos(screen, 0, TOP_BAR_H);
     lv_obj_set_size(screen, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_H);
@@ -222,15 +221,7 @@ lv_obj_t* addScreen(const char* name, void (*on_show)(void)) {
     lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
 
     if (screen_count < MAX_SCREENS) screens[screen_count++] = { screen, on_show };
-
-    // Matching entry in the top-right dropdown.
-    lv_obj_t* menu_btn = lv_button_create(menu_list);
-    lv_obj_set_size(menu_btn, LV_PCT(100), 28);
-    set_btn_inactive_style(menu_btn);
-    lv_obj_add_event_cb(menu_btn, menu_item_cb, LV_EVENT_CLICKED, screen);
-    lv_obj_t* menu_label = lv_label_create(menu_btn);
-    lv_label_set_text(menu_label, name);
-    lv_obj_center(menu_label);
+    addMenuEntry(name, screen);
 
     return screen;
 }
