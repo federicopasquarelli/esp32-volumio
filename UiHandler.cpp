@@ -10,6 +10,8 @@ static lv_obj_t *label_top, *cont_player, *btn_menu, *menu_list, *label_title, *
 static lv_obj_t *label_elapsed, *label_volume;
 static lv_obj_t *btn_play, *btn_label, *btn_prev, *btn_next, *btn_shuffle, *btn_repeat;
 static lv_obj_t *slider_volume;
+static lv_obj_t* cont_offline = NULL;
+static bool offline_shown = false;
 static bool currentShuffle = false;
 static bool currentRepeat = false;
 static bool currentRepeatSingle = false;
@@ -196,8 +198,39 @@ void setupUI() {
     lv_obj_set_style_pad_all(cont_player, 0, 0);
     lv_obj_remove_flag(cont_player, LV_OBJ_FLAG_SCROLLABLE);
 
+    // "Volumio is unreachable" notice. Covers the whole player area rather than sitting in a free
+    // corner: once the connection has dropped, whatever controls/track info were showing are
+    // stale and their buttons would silently do nothing, and a plain opaque cover also swallows
+    // taps on them. The header (and so the dropdown) stays outside it. Hidden until
+    // setVolumioOffline(true).
+    cont_offline = lv_obj_create(cont_player);
+    lv_obj_set_size(cont_offline, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(cont_offline, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_border_width(cont_offline, 0, 0);
+    lv_obj_set_style_pad_all(cont_offline, 0, 0);
+    lv_obj_remove_flag(cont_offline, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t* offline_label = lv_label_create(cont_offline);
+    lv_label_set_text(offline_label, LV_SYMBOL_WARNING "  Volumio is unreachable");
+    lv_obj_set_style_text_font(offline_label, &lv_font_montserrat_ext_18, 0);
+    lv_obj_set_style_text_color(offline_label, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_center(offline_label);
+    lv_obj_add_flag(cont_offline, LV_OBJ_FLAG_HIDDEN);
+
     // Player's own dropdown entry, now that there's no dedicated Back button to return to it.
     addMenuEntry("Player", cont_player);
+}
+
+void setVolumioOffline(bool offline) {
+    if (!cont_offline || offline == offline_shown) return;
+    offline_shown = offline;
+    if (offline) {
+        // The player's own widgets get created after this one (on the first pushState), so on a
+        // later drop they'd otherwise sit on top of it.
+        lv_obj_move_foreground(cont_offline);
+        lv_obj_remove_flag(cont_offline, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(cont_offline, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void updateTime() {

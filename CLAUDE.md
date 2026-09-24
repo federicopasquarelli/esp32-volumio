@@ -182,6 +182,28 @@ also live in `arduino_secrets.h`, gitignored.
     from starting at x=78 (to the right of where the art box used to be) to x=8, left-aligned
     against the same margin the rest of the header uses, and widened from 226px to 296px to use
     the freed horizontal space.
+19. **UI no longer freezes when Volumio is unreachable.** With the Raspberry off, the whole UI
+    (including the dropdown to reach Lights/Library/Queue) was effectively dead. Cause, confirmed
+    in the library source (`WebSocketsClient.cpp`, `loop()`): while not connected it retries with
+    a *blocking* `connect()` — DNS/mDNS lookup of `volumio.local` plus up to
+    `WEBSOCKETS_TCP_TIMEOUT` (5s) — on the caller's thread every 500ms, and that caller is the
+    Arduino `loop()` that also runs LVGL and the touch reader. `VolumioHandler.cpp` now runs a
+    small `probeTask` that periodically checks (off the main loop) whether Volumio's port accepts
+    a TCP connection, and `loopVolumio()` only calls `ws.loop()` when the socket is already
+    connected or the probe has just said a connect will be quick; a `WStype_DISCONNECTED` event
+    clears the flag so a dropped connection doesn't go straight back to blocking on a dead host.
+    The player screen (whose widgets are only created lazily on the first pushState, so it used
+    to just sit blank) now shows a "Volumio is unreachable" notice: `cont_offline` in
+    `UiHandler.cpp`, an opaque cover over the whole player area (so stale controls are hidden and
+    can't be tapped; the header/dropdown stay usable), driven by `setVolumioOffline()` from
+    `loopVolumio()` once the socket has been down for 3s straight (`OFFLINE_NOTICE_DELAY_MS`, so a
+    quick drop-and-reconnect or the first moments after boot don't flash it). Untested against
+    the real server's behavior for an idle, pingless client -- this sketch never sends the
+    Engine.IO v3 pings the server may expect, so if Volumio turns out to drop the connection
+    periodically the probe's ~250ms reaction time and the 3s grace are what keep that invisible;
+    if the notice ever flickers on a healthy Pi, look there first. Unchanged and separate:
+    `setup()` still blocks forever in `while (WiFi.status() != WL_CONNECTED)` if *WiFi* itself
+    is unavailable.
 
 ## Known quirks / gotchas worth remembering
 

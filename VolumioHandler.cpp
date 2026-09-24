@@ -1,12 +1,43 @@
 #include "VolumioHandler.h"
 #include "UiHandler.h"
 #include <ArduinoJson.h>
+#include <WiFi.h>
 #include "arduino_secrets.h"
 
 WebSocketsClient ws;
 
+// WebSocketsClient::loop() retries a connection that isn't up with a *blocking* connect() (a
+// DNS/mDNS lookup of volumio.local plus up to 5s of TCP timeout) on the caller's own thread --
+// here the Arduino loop(), which also runs LVGL and the touch reader. With the Raspberry off
+// that meant a multi-second freeze every half second, so the whole UI, including the dropdown
+// to reach Library/Queue/Lights, was effectively dead. loopVolumio() therefore only lets
+// ws.loop() run when the socket is already connected, or when this probe has just confirmed
+// Volumio is accepting connections (so the connect it makes will be quick). The probe is what
+// eats the blocking time now, on its own task, where it can't hurt anything.
+static volatile bool volumio_reachable = false;
+
+static void probeTask(void*) {
+  for (;;) {
+    // Nothing to probe while connected, and deliberately no write to volumio_reachable here:
+    // the DISCONNECTED handler below is what clears it, and this task racing it could undo that.
+    // Short sleep so a drop is noticed (and, if Volumio is actually still up, re-confirmed and
+    // reconnected) within a fraction of a second rather than leaving a visible gap.
+    if (ws.isConnected()) {
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+    WiFiClient probe;
+    volumio_reachable = probe.connect(SECRET_VOLUMIO_HOST, SECRET_VOLUMIO_PORT, 1500);
+    probe.stop();
+    vTaskDelay(pdMS_TO_TICKS(volumio_reachable ? 1000 : 3000));
+  }
+}
+
 void webSocketEvent(WStype_t t, uint8_t* p, size_t l) {
   if (t == WStype_CONNECTED) ws.sendTXT("42[\"getState\"]");
+  // Lost an established connection: don't let ws.loop() go straight back to blocking on a dead
+  // host until the probe has re-confirmed it's actually back.
+  if (t == WStype_DISCONNECTED) volumio_reachable = false;
   if (t == WStype_TEXT && l > 2 && p[0] == '4' && p[1] == '2') {
     JsonDocument d;
     deserializeJson(d, (char*)(p + 2));
@@ -30,9 +61,29 @@ void webSocketEvent(WStype_t t, uint8_t* p, size_t l) {
 void setupVolumio() {
   ws.begin(SECRET_VOLUMIO_HOST, SECRET_VOLUMIO_PORT, "/socket.io/?EIO=3&transport=websocket");
   ws.onEvent(webSocketEvent);
+  xTaskCreatePinnedToCore(probeTask, "VolumioProbe", 6144, NULL, 1, NULL, 1);
 }
 
-void loopVolumio() { ws.loop(); }
+// How long the socket has to stay down before the player screen says Volumio is unreachable --
+// long enough that a quick drop-and-reconnect (or the moment right after boot, before the first
+// connect) doesn't flash the notice.
+#define OFFLINE_NOTICE_DELAY_MS 3000
+
+void loopVolumio() {
+  if (ws.isConnected() || volumio_reachable) ws.loop();
+
+  static bool down = false;
+  static unsigned long down_since_ms = 0;
+  if (ws.isConnected()) {
+    down = false;
+    setVolumioOffline(false);
+  } else if (!down) {
+    down = true;
+    down_since_ms = millis();
+  } else if (millis() - down_since_ms >= OFFLINE_NOTICE_DELAY_MS) {
+    setVolumioOffline(true);
+  }
+}
 void togglePlayback() { ws.sendTXT("42[\"toggle\"]"); }
 void prevTrack() { ws.sendTXT("42[\"prev\"]"); }
 void nextTrack() { ws.sendTXT("42[\"next\"]"); }

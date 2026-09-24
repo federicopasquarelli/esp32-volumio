@@ -9,6 +9,9 @@ void updateTime();
 lv_obj_t* addScreen(const char* name, void (*on_show)(void) = NULL);
 void updateVolumioUI(const char* title, const char* artist, const char* album, bool isPlaying, bool shuffle, bool repeat, bool repeatSingle, int elapsedSec, int durationSec);
 void updateVolumeUI(int volume);
+// Shows/hides the "Volumio is unreachable" notice covering the player screen. Cheap to call every
+// loop() iteration -- it no-ops unless the state actually changes.
+void setVolumioOffline(bool offline);
 // Redraws the elapsed-time label from real time elapsed since the last pushState. Call every
 // loop() iteration, not on a timer (it no-ops unless the displayed second actually changed) —
 // a no-op until the first pushState has arrived either way.
