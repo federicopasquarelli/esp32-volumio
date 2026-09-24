@@ -4,7 +4,7 @@
 #include "CustomFonts.h"
 #include <time.h>
 
-#define MAX_SCREENS 4
+#define MAX_SCREENS 6
 
 static lv_obj_t *label_top, *cont_player, *btn_menu, *menu_list, *label_title, *label_artist, *label_album;
 static lv_obj_t *label_elapsed, *label_volume;
@@ -107,7 +107,7 @@ static void refreshPlaybackClock() {
 
 // Hides every registered screen and the player, then shows just the target and runs its
 // on_show callback, if it has one. Also closes the dropdown menu, in case it was left open.
-static void showScreen(lv_obj_t* target) {
+void showScreen(lv_obj_t* target) {
     lv_obj_add_flag(cont_player, LV_OBJ_FLAG_HIDDEN);
     void (*on_show)(void) = NULL;
     for (int i = 0; i < screen_count; i++) {
@@ -241,9 +241,8 @@ void updateTime() {
     }
 }
 
-lv_obj_t* addScreen(const char* name, void (*on_show)(void)) {
-    // The dropdown (see addMenuEntry) is how every screen is reached, so this is plain content
-    // filling the space below the top bar, same geometry the player screen uses.
+static lv_obj_t* createScreen(void (*on_show)(void)) {
+    // Plain content filling the space below the top bar, same geometry the player screen uses.
     lv_obj_t* screen = lv_obj_create(lv_screen_active());
     lv_obj_set_pos(screen, 0, TOP_BAR_H);
     lv_obj_set_size(screen, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_H);
@@ -254,9 +253,18 @@ lv_obj_t* addScreen(const char* name, void (*on_show)(void)) {
     lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
 
     if (screen_count < MAX_SCREENS) screens[screen_count++] = { screen, on_show };
-    addMenuEntry(name, screen);
-
     return screen;
+}
+
+lv_obj_t* addScreen(const char* name, void (*on_show)(void)) {
+    // The dropdown (see addMenuEntry) is how every one of these is reached.
+    lv_obj_t* screen = createScreen(on_show);
+    addMenuEntry(name, screen);
+    return screen;
+}
+
+lv_obj_t* addHiddenScreen(void (*on_show)(void)) {
+    return createScreen(on_show);
 }
 
 void updateVolumioUI(const char* title, const char* artist, const char* album, bool isPlaying, bool shuffle, bool repeat, bool repeatSingle, int elapsedSec, int durationSec) {

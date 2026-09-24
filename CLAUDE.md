@@ -46,7 +46,8 @@ also live in `arduino_secrets.h`, gitignored.
   Authenticates against the Tuya Cloud API (`openapi.tuyaeu.com`, Simple mode signing), lists up
   to 5 devices (`/v2.0/cloud/thing/device?page_size=5`) with their live switch state
   (`GET .../status`, code `switch_led`) on screen-open, and tapping one toggles it
-  (`POST .../commands`). No unlink/remove action, by design.
+  (`POST .../commands`); long-pressing one opens a hidden per-light brightness page (slider +
+  Back button). No unlink/remove action, by design.
 
 ## Session history (chronological, most recent last)
 
@@ -205,6 +206,40 @@ also live in `arduino_secrets.h`, gitignored.
     `setup()` still blocks forever in `while (WiFi.status() != WL_CONNECTED)` if *WiFi* itself
     is unavailable.
 
+20. **Per-light brightness page** (long-press a light on the Lights screen). A hidden screen — new
+    `addHiddenScreen()` in `UiHandler.cpp`, registered like `addScreen()` but with no dropdown
+    entry, plus `showScreen()` now exported so `TuyaLights.cpp` can navigate to/from it — holding
+    the light's name, a big percent readout, a thick slider and a Back button. Long-press vs tap
+    uses the same `PRESSED`/`LONG_PRESSED`/`CLICKED` + `long_press_handled` pattern as Library
+    (LVGL still sends CLICKED on release after a long press). The slider only sends a command on
+    release (`RELEASED`/`PRESS_LOST`), not per drag step, and goes through the same
+    one-request-at-a-time queue (`pending_bright_index`, last release wins). Back redraws the
+    Lights list from local state (`returning_from_brightness`) instead of reloading over the
+    network, since `showScreen()` would otherwise fire `refreshTuyaLights()` (the Lights screen's
+    `on_show`). What the API is, per Tuya's official docs (standard instruction set for lights,
+    category `dj`) and this project's two Extrastar A60 bulbs' own `/specifications`:
+    `bright_value_v2` is an integer 10..1000; `colour_data_v2` is sent as an **object**
+    `{"h","s","v"}` (h 0..360, s/v 0..1000) even though status returns it as a JSON *string*;
+    `work_mode` is `white`/`colour`/`scene`/`music`. **The docs do not say** which code governs
+    brightness in which mode, nor whether either turns an off light on, so `sendBrightness()`
+    follows what each code is for (colour mode → `colour_data_v2.v` with h/s resent unchanged,
+    otherwise `bright_value_v2`; slider percent × 10 either way) and, for a light that's off, adds
+    `switch_led: true` to the same request. **Untested on hardware** — verify both bulbs (one
+    was in `colour`, one in `white` mode when checked). Also: while researching this, same-value
+    writes (bright/colour set to their current values, lights off, state read back unchanged)
+    were sent to the real bulbs to check the request format was accepted — the user preferred
+    working from the official docs, so don't probe live devices with commands again unasked.
+    **Colour palette + thinner slider (follow-up):** the page also has twelve round swatches (eleven
+    full-saturation hues plus white, two rows of six, 12px apart) that change the light's colour, and the
+    slider went from 18px to 8px tall (knob padded out to stay grabbable). The header row now
+    holds Back, the name and the big percent readout. A swatch sends `work_mode` explicitly
+    (`colour`, or `white`) together with `colour_data_v2 {h, s:1000, v: slider*10}` (white:
+    `bright_value_v2` instead), plus `switch_led: true` if the light is off — the docs are silent
+    on whether `colour_data_v2` alone switches a white-mode bulb over, so it doesn't rely on that.
+    Goes through the same single-in-flight queue (`pending_colour_*`, last tap wins; runs after a
+    pending brightness). The selected swatch (white border) follows the light's real state and
+    snaps back if a command fails. **Untested on hardware**, like the rest of this page.
+
 ## Known quirks / gotchas worth remembering
 
 - **LVGL's compiled-in fonts are ASCII-only** — the stock Montserrat fonts (`lv_conf.h`, shared,
@@ -248,11 +283,20 @@ also live in `arduino_secrets.h`, gitignored.
   buffers) — WiFi's own connection-time allocations compete for that same early, "pristine" heap.
   A later, bigger reservation (for HTTPS + JPEG decode buffers) starved it enough that WiFi never
   connected at all. Measure actual headroom before assuming "early = safe."
-- **Colors look swapped on this display**: `COLOR_ACCENT` is defined as `0x1DB954` (green) but
-  renders as blue on the physical screen. Never chased down why (likely a BGR/RGB or byte-order
-  quirk in the `draw16bitBeRGBBitmap` path in `LvglHandler.cpp`); the user is fine with it, so it
-  hasn't been touched. Don't "fix" this without asking — the accent color choice downstream
-  assumes it renders blue.
+- **Colors look swapped on this display — root cause found, still deliberately not fixed.**
+  `COLOR_ACCENT` is `0x1DB954` (green) but renders blue-violet. Read from the code: the flush
+  (`LvglHandler.cpp`) calls `gfx->draw16bitBeRGBBitmap()`, which sends the buffer's bytes exactly
+  as they sit in memory (`Arduino_TFT.cpp` → `_bus->writeBytes`), but LVGL 9's RGB565 buffer is
+  little-endian (`lv_color16_t` bitfields, `LV_COLOR_16_SWAP` is a no-op in v9) while the ILI9341
+  wants the high byte first — so **every pixel reaches the panel with its two bytes swapped**
+  (black/white unaffected; `0x1DB954` → RGB565 `0x1DCA` → seen as `0xCA1D` ≈ violet; greys get
+  tinted too). The one-line fix would be `draw16bitRGBBitmap()`, but the user is fine with the
+  current look and the accent choice downstream assumes it, so it hasn't been touched — don't
+  "fix" it without asking. Anything where the *actual* colour matters has to compensate instead:
+  `DISPLAY_BYTE_SWAPPED` in `DisplayConfig.h` + `panelColor()` in `TuyaLights.cpp` pre-swap the
+  colour palette's swatches. **If the flush is ever fixed, set `DISPLAY_BYTE_SWAPPED` to 0** or
+  the palette goes wrong. This diagnosis is from reading the code, not from measuring the
+  panel — if the palette swatches look off on the device, this is the first place to check.
 - **Serial port**: the user runs Arduino IDE with its own Serial Monitor attached to
   `/dev/ttyUSB0` most of the time. Don't kill that process to grab the port without asking first
   — did this once already and it was disruptive. If you need serial output, either ask the user

@@ -14,7 +14,7 @@ void setup() {
     setupUI();
     setupLibrary(addScreen("Library"));
     setupQueue(addScreen("Queue", refreshQueue));
-    setupTuyaLights(addScreen("Lights", refreshTuyaLights));
+    setupTuyaLights(addScreen("Lights", refreshTuyaLights), addHiddenScreen());
     WiFi.begin(SECRET_SSID, SECRET_PASS);
     while (WiFi.status() != WL_CONNECTED) delay(100);
     configTzTime(SECRET_TIMEZONE, "pool.ntp.org");

@@ -3,8 +3,10 @@
 
 #include <lvgl.h>
 
-// Builds the lights screen inside the given container, reached from the dropdown menu.
-void setupTuyaLights(lv_obj_t* parent);
+// Builds the lights screen inside the given container (reached from the dropdown menu), plus the
+// per-light brightness page inside brightnessParent (a hidden screen, opened by long-pressing a
+// light -- see addHiddenScreen()).
+void setupTuyaLights(lv_obj_t* parent, lv_obj_t* brightnessParent);
 // Applies finished network results to the UI. Call from loop().
 void loopTuyaLights();
 // Reloads the device list (and each one's on/off state) from the Tuya Cloud API. Runs on a
