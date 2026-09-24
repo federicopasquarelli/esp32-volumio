@@ -1,8 +1,9 @@
 # CYD Volumio Smart Clock — Claude context
 
-Read this before working on the project. For hardware pins/touch calibration see [GEMINI.md](GEMINI.md);
-for user-facing setup instructions see [README.md](README.md). This file is session history and
-things that aren't obvious from the code.
+Read this before working on the project. For user-facing setup instructions see
+[README.md](README.md). Hardware pins/touch calibration and how secrets are configured are in the
+two sections right below; the rest of this file is session history and things that aren't obvious
+from the code.
 
 ## What this is
 
@@ -19,6 +20,26 @@ with `PartitionScheme=huge_app` or it'll fail to fit. ESP32 core: pinned to **`e
 
 Volumio host for dev: `volumio.local:3000`. Tuya Developer Platform credentials (client ID/key)
 also live in `arduino_secrets.h`, gitignored.
+
+## Hardware
+
+- **Board**: ESP32-2432S028 (Cheap Yellow Display v2/v3), no PSRAM (ESP32-WROOM-32).
+- **Display**: ILI9341 2.8" SPI, 320x240.
+  - Bus: HSPI, `SCK:14, MOSI:13, MISO:12, CS:15, DC:2, RST:-1` (`DisplayConfig.h`).
+  - Backlight: pin 21 (primary) / 27 (alternate on some board revisions); HIGH = on.
+- **Touch**: XPT2046 resistive, on its own VSPI bus: `SCK:25, MOSI:32, MISO:39, CS:33`, `IRQ:-1`
+  (polling mode, no interrupt line used).
+  - Mapping (`TouchHandler.cpp`): `x: [200, 3700] -> [0, 320]`, `y: [240, 3800] -> [0, 240]`.
+  - Noise filter: ignore readings where `p.x`/`p.y` is `<= 0` or `>= 8191` (`8191` is what a bus
+    contention read looks like) and require pressure `p.z > 400`.
+  - Screen dimensions and pins live in `DisplayConfig.h`, the touch code in `TouchHandler.cpp`.
+
+## Credentials / secrets
+
+WiFi, Volumio and Tuya settings live in `arduino_secrets.h`, which is **gitignored**. To set up a
+local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`, `SECRET_PASS`,
+`SECRET_TIMEZONE`, `SECRET_VOLUMIO_HOST`, `SECRET_VOLUMIO_PORT`, `SECRET_TUYA_CLIENT_ID`,
+`SECRET_TUYA_CLIENT_KEY`. Never commit real values or paste them into other files.
 
 ## File map
 
