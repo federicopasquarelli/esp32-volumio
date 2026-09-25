@@ -13,7 +13,8 @@ lv_obj_t* addHiddenScreen(void (*on_show)(void) = NULL);
 // Switches to the given screen (any addScreen()/addHiddenScreen() result, or the player) the same
 // way the dropdown does: hides the others, closes the dropdown, runs its on_show.
 void showScreen(lv_obj_t* target);
-void updateVolumioUI(const char* title, const char* artist, const char* album, bool isPlaying, bool shuffle, bool repeat, bool repeatSingle, int elapsedSec, int durationSec);
+// airplay: Volumio's source is AirPlay -- play/prev/next are disabled and the artist reads "Airplay".
+void updateVolumioUI(const char* title, const char* artist, const char* album, bool airplay, bool isPlaying, bool shuffle, bool repeat, bool repeatSingle, int elapsedSec, int durationSec);
 void updateVolumeUI(int volume);
 // Shows/hides the "Volumio is unreachable" notice covering the player screen. Cheap to call every
 // loop() iteration -- it no-ops unless the state actually changes.

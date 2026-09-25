@@ -261,6 +261,46 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     pending brightness). The selected swatch (white border) follows the light's real state and
     snaps back if a command fails. **Untested on hardware**, like the rest of this page.
 
+21. **Menu is now a full-screen overlay.** The old 150px dropdown panel under the toggle became
+    `menu_list` in `UiHandler.cpp`: a 320x240 opaque overlay (covers the header too) with a "Menu"
+    title, a close button (X) in the same top-right spot as the toggle that opens it, and
+    `menu_grid`, a two-column flex-wrap grid of 146x84 tiles (`addMenuEntry()`); more than four
+    entries make the grid scroll. Deliberately an **overlay, not a screen** (asked "which is
+    better?"): closing it only hides it, so the screen underneath is untouched — a menu that were
+    a registered screen would need a "previous screen" memory and `showScreen(previous)` would
+    re-fire that screen's `on_show` (Lights/Queue reloading over the network just because the menu
+    was opened and closed, brightness page restarting, etc.). Picking a tile still goes through
+    `showScreen()`, which hides the overlay.
+
+22. **AirPlay mode on the player screen.** When Volumio's `service` is `airplay_emulation` (checked
+    live against the Pi while it was on AirPlay: `service: "airplay_emulation"`, `trackType:
+    "airplay"`, and title/artist/album all **empty strings**), `updateVolumioUI()` gets
+    `airplay = true`: play/pause, prev and next go `LV_STATE_DISABLED` (dim outline,
+    `set_btn_disabled_style()`; their callbacks also check `player_airplay` themselves) and the
+    artist label reads "Airplay". Detected via `service`, deliberately not via the artist text —
+    a local track by an artist actually called "Airplay" would otherwise disable the controls.
+    Shuffle/repeat/volume are left as they were (not asked for).
+
+23. **Restart / Shut down Volumio, from the menu.** Two action tiles in a row along the bottom of
+    the full-screen menu (grey outline, so they don't read as destinations; the navigation tiles
+    shrank from 84 to 56px tall to make room, two rows in `menu_grid` above them). They send
+    Volumio's websocket `reboot` / `shutdown` events (`42["reboot"]` / `42["shutdown"]`, no
+    payload) — read from the backend source (`volumio/Volumio2`,
+    `app/plugins/user_interface/websocket/index.js`, which calls `commandRouter.reboot()` /
+    `shutdown()`); Volumio's own docs don't list them, they're not on the REST API, and there's no
+    event to restart only the service, so "restart" means rebooting the device. **Never test these
+    against the real Pi** — a shutdown has to be undone by hand. Both go through a confirm dialog
+    (`confirm_layer` inside `menu_list`, dimmed backdrop that also eats taps on the tiles behind
+    it) with a one-line consequence, since neither can be undone from the clock. If the websocket
+    isn't connected, `restartVolumio()`/`shutdownVolumio()` return false (`sendTXT`'s result) and
+    the dialog says "Volumio is unreachable" instead of pretending it worked. Untested on hardware.
+    **Follow-up: UI froze after pressing Restart.** Confirmed fixed on hardware. Cause (inferred from
+    the code, never reproduced): while the Pi shuts down its port stays open for a few seconds, so `probeTask`
+    still reported it reachable and `ws.loop()` started a blocking reconnect on the UI thread.
+    Fix in `VolumioHandler.cpp`: `sendSystemAction()` sets a 30s reconnect hold-off
+    (`SYSTEM_ACTION_HOLD_OFF_MS`) during which the probe idles and `loopVolumio()` doesn't call
+    `ws.loop()` on a disconnected socket. Restart works on the real Pi with this.
+
 ## Known quirks / gotchas worth remembering
 
 - **LVGL's compiled-in fonts are ASCII-only** — the stock Montserrat fonts (`lv_conf.h`, shared,
