@@ -3,6 +3,7 @@
 #include "DisplayConfig.h"
 #include "VolumioHandler.h"
 #include "CustomFonts.h"
+#include "PaginationNav.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -114,11 +115,6 @@ static void startOp(QueueOp op, int index = 0) {
     xTaskCreatePinnedToCore(queueTask, "QueueOp", 8192, (void*)(intptr_t)((index << 4) | op), 1, NULL, 1);
 }
 
-static void setEnabled(lv_obj_t* obj, bool enabled) {
-    if (enabled) lv_obj_remove_state(obj, LV_STATE_DISABLED);
-    else lv_obj_add_state(obj, LV_STATE_DISABLED);
-}
-
 static int pageCount() {
     int pages = (item_count + QUEUE_PAGE_SIZE - 1) / QUEUE_PAGE_SIZE;
     return pages > 0 ? pages : 1;
@@ -131,9 +127,9 @@ static void updateNav(bool listing) {
     if (listing) snprintf(txt, sizeof(txt), "%d/%d", page + 1, pages);
     else strlcpy(txt, "-", sizeof(txt));
     lv_label_set_text(label_page, txt);
-    setEnabled(btn_clear, listing && item_count > 0);
-    setEnabled(btn_prev_page, listing && page > 0);
-    setEnabled(btn_next_page, listing && page < pages - 1);
+    setPagerEnabled(btn_clear, listing && item_count > 0);
+    setPagerEnabled(btn_prev_page, listing && page > 0);
+    setPagerEnabled(btn_next_page, listing && page < pages - 1);
 }
 
 static void setStatus(const char* text) {
@@ -215,24 +211,6 @@ static void clear_cb(lv_event_t*) {
 static void prev_page_cb(lv_event_t*) { if (!busy && page > 0) { page--; showList(); } }
 static void next_page_cb(lv_event_t*) { if (!busy && page < pageCount() - 1) { page++; showList(); } }
 
-static lv_obj_t* addNavButton(lv_obj_t* bar, const char* symbol, lv_event_cb_t cb) {
-    lv_obj_t* b = lv_button_create(bar);
-    lv_obj_set_size(b, 70, QUEUE_ROW_H - 4);
-    // Enabled buttons are filled with the accent, disabled ones are empty, like the tab labels.
-    lv_obj_set_style_bg_color(b, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(0x19A34A), LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(b, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(0x000000), LV_STATE_DISABLED);
-    lv_obj_set_style_text_color(b, lv_color_hex(0xAAAAAA), LV_STATE_DISABLED);
-    lv_obj_set_style_border_width(b, 1, LV_STATE_DISABLED);
-    lv_obj_set_style_border_color(b, lv_color_hex(COLOR_ACCENT), LV_STATE_DISABLED);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t* l = lv_label_create(b);
-    lv_label_set_text(l, symbol);
-    lv_obj_center(l);
-    return b;
-}
-
 void setupQueue(lv_obj_t* parent_tab) {
     tab_queue = parent_tab;
     titles = new char[QUEUE_MAX_ITEMS][QUEUE_TITLE_LEN];
@@ -263,11 +241,11 @@ void setupQueue(lv_obj_t* parent_tab) {
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    btn_clear = addNavButton(bar, LV_SYMBOL_TRASH, clear_cb);
-    btn_prev_page = addNavButton(bar, LV_SYMBOL_LEFT, prev_page_cb);
+    btn_clear = createPagerButton(bar, 70, QUEUE_ROW_H - 4, LV_SYMBOL_TRASH, clear_cb);
+    btn_prev_page = createPagerButton(bar, 70, QUEUE_ROW_H - 4, LV_SYMBOL_LEFT, prev_page_cb);
     label_page = lv_label_create(bar);
     lv_obj_set_style_text_color(label_page, lv_color_hex(0xFFFFFF), 0);
-    btn_next_page = addNavButton(bar, LV_SYMBOL_RIGHT, next_page_cb);
+    btn_next_page = createPagerButton(bar, 70, QUEUE_ROW_H - 4, LV_SYMBOL_RIGHT, next_page_cb);
     updateNav(false);
 }
 

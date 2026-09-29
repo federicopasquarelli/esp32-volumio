@@ -10,6 +10,11 @@ lv_obj_t* addScreen(const char* name, void (*on_show)(void) = NULL);
 // Like addScreen(), but with no dropdown entry: for a sub-page only reachable from another screen
 // (via showScreen() below) rather than from the menu, e.g. a per-item detail view.
 lv_obj_t* addHiddenScreen(void (*on_show)(void) = NULL);
+// Adds the Restart/Shut down tiles to the end of the dropdown menu grid. Call exactly once, after
+// every addScreen()/addHiddenScreen() the sketch will ever register, so these two land after all
+// of them and have to be scrolled to like any other overflow tile, instead of sitting in their
+// own fixed row below the grid.
+void addSystemMenuActions();
 // Switches to the given screen (any addScreen()/addHiddenScreen() result, or the player) the same
 // way the dropdown does: hides the others, closes the dropdown, runs its on_show.
 void showScreen(lv_obj_t* target);

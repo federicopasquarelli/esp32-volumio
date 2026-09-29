@@ -3,7 +3,14 @@
 
 Arduino_DataBus *bus = new Arduino_ESP32SPI(DC, CS, SCK, MOSI, MISO);
 Arduino_GFX *gfx = new Arduino_ILI9341(bus, RST, 0, true);
-static uint8_t buf[SCREEN_WIDTH * 20 * sizeof(lv_color16_t)];
+// Heap, not static -- a static array this size (12.8KB) competes with everything else for the
+// ESP32's small, separately-limited static DRAM segment (dram0_0_seg), which is a much tighter
+// budget than the "free dynamic memory" arduino-cli reports at compile time suggests (see
+// CLAUDE.md's item 17 for the same lesson learned from a smaller buffer, and item 25's follow-up
+// for how this one was found: raising LV_MEM_SIZE, itself a static array in lv_conf.h, hit this
+// same ceiling before this buffer was the thing pushing it over).
+static uint8_t* buf = NULL;
+#define BUF_SIZE (SCREEN_WIDTH * 20 * sizeof(lv_color16_t))
 
 void my_disp_flush(lv_display_t *d, const lv_area_t *a, uint8_t *px_map) {
     gfx->draw16bitBeRGBBitmap(a->x1, a->y1, (uint16_t *)px_map, a->x2-a->x1+1, a->y2-a->y1+1);
@@ -47,9 +54,11 @@ void setupLVGL() {
     lv_init();
     lv_tick_set_cb(my_tick);
 
+    buf = (uint8_t*)malloc(BUF_SIZE);
+
     lv_display_t *d = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
     lv_display_set_flush_cb(d, my_disp_flush);
-    lv_display_set_buffers(d, buf, NULL, sizeof(buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_buffers(d, buf, NULL, BUF_SIZE, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
     lv_indev_t *i = lv_indev_create();
     lv_indev_set_type(i, LV_INDEV_TYPE_POINTER);

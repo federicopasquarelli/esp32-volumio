@@ -57,6 +57,10 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   update folder).
 - [VolumioQueue.cpp](VolumioQueue.cpp) — queue viewer/editor, HTTP via `/api/v1/getQueue` +
   `/api/v1/commands/?cmd=...`, per-item remove button.
+- [PaginationNav.cpp](PaginationNav.cpp) — `createPagerButton()`/`setPagerEnabled()`, the styled
+  nav button (Prev/Next/Up/Clear) shared by Library and Queue's bottom bars -- see item 28.
+- [VolumioArtists.cpp](VolumioArtists.cpp) — Artists screen (dropdown entry, via `addScreen`).
+  Currently just a "Coming soon" placeholder — see item 24.
 - [DisplayConfig.h](DisplayConfig.h) — pins, screen dims, shared constants (`COLOR_ACCENT`,
   `TOP_BAR_H`, `SCREEN_TIMEOUT_MS`).
 - [CustomFonts.h](CustomFonts.h) + `font_montserrat_ext_{12,14,18,32}.c` — Montserrat fonts
@@ -138,9 +142,9 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     actually supports `offset`/`limit` query params (tested directly against `volumio.local`), so
     Library now does one HTTP fetch per page turn instead: `items[]` shrank to a 4-slot static
     array (no more heap `new[]`), and `has_more` (was the last fetch a full page?) replaces the
-    old total-based `pageCount()` for enabling the Next button — this can be a false positive
-    right when a folder's item count is an exact multiple of 4 (Next loads one harmless empty
-    page), see the comment above `has_more` in `VolumioLibrary.cpp`.
+    old total-based `pageCount()` for enabling the Next button — this was a false positive right
+    when a folder's item count was an exact multiple of 4 (Next loaded one harmless empty page).
+    **Fixed properly later, see item 25.**
 12. **Lights UI**: devices became two big (130x130) centered buttons instead of list rows —
     accent-filled when on, black with an accent border when off (same on/off language as the
     player's shuffle/repeat buttons, `styleDeviceButton` in `TuyaLights.cpp`). Tapping a light
@@ -164,7 +168,14 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     opening the Lights screen normally makes zero auth calls at all).
 15. **All `Serial.*` logging removed project-wide** (including `Serial.begin()`), per explicit
     request. If you need runtime visibility again — e.g. to debug a new Tuya failure mode — you'll
-    need to re-add both.
+    need to re-add both. **Temporarily reinstated** while chasing the Library "stuck loading" bug
+    (see item 25's follow-up): `Serial.begin(115200)` in `arduino32.ino`, a 5s heartbeat in
+    `loop()` (to tell "loop() itself is blocked" apart from "just Library's fetch state is stuck"),
+    and `[Lib]`-prefixed logging through `VolumioLibrary.cpp`'s whole fetch path (`startFetch()`,
+    `fetchTask()`, `loopLibrary()`, `showError()`) covering heap headroom
+    (`heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)`, the trustworthy one per the heap quirk
+    below, not `ESP.getFreeHeap()` alone), HTTP result code, deserialization result, and the
+    parsed `item_count`/`total_count`/`has_more`. Strip all of it back out once the bug is found.
 16. **Tuya pre-auth at boot.** `startTuyaAuth()` runs the login in the background right after
     `setup()`'s WiFi/NTP work (placed last, so NTP has had a moment to sync -- signing needs a
     roughly-correct clock), so opening the Lights screen for the first time only pays for the
@@ -301,7 +312,167 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     (`SYSTEM_ACTION_HOLD_OFF_MS`) during which the probe idles and `loopVolumio()` doesn't call
     `ws.loop()` on a disconnected socket. Restart works on the real Pi with this.
 
-## Known quirks / gotchas worth remembering
+24. **Artists screen stub.** New "Artists" entry in the dropdown menu, next to Library/Queue/
+    Lights, going through the same `addScreen()` mechanism -- no new UI pattern needed. For now
+    `VolumioArtists.cpp`'s `setupArtists()` just centers a "Coming soon" placeholder label; nothing
+    is fetched from Volumio yet. Whatever browsing UI it gets later: confirmed live (see item 25)
+    that the root `/api/v1/browse` listing already includes an `"uri": "artists://"` entry
+    alongside `music-library`, so it's the same `/api/v1/browse` used by `VolumioLibrary.cpp`,
+    just starting from that URI instead of `music-library` -- no dedicated "list artists" call
+    needed.
+
+25. **Library pagination: exact page count and total, from Volumio's own `count` field.** Checked
+    live against `volumio.local` (a 117-item folder): passing `offset`/`limit` to `/api/v1/browse`
+    (as Library already does, see item 11) makes the response's list include `"count"`, the
+    folder's *real* total item count, stable across every offset tried -- not just how many items
+    came back on that page. It's absent when browsing without `offset`/`limit` at all. This
+    replaced `has_more`'s old "was the last page full?" guess (the item-11 false positive on an
+    exact multiple of the page size) with `(fetch_page + 1) * LIB_PAGE_SIZE < total_count`, and
+    the page indicator now reads "current/total" (e.g. "3/30") instead of just the current page
+    number. Falls back to the old full-page guess, and to showing just the current page number,
+    if a response is ever missing `count` (older Volumio version) -- `total_count` is `-1` in that
+    case. `total_count` and the `count` JSON key are folder-scoped, re-fetched (and so
+    re-validated) on every page turn, folder entry and Back, same as `item_count`.
+    **Follow-up: Library sometimes got stuck on "Loading..." with Prev/Next/Up all disabled,**
+    reported while paging quickly through "Music" (30 pages -- the only folder in this library big
+    enough to invite rapid repeated Next taps; every other folder is a handful of items). Root
+    cause, found reading the code rather than reproduced: `startFetch()`'s
+    `xTaskCreatePinnedToCore()` call never checked its return value. Under the kind of heap
+    pressure this project has hit before (see the heap quirks below), task creation can fail to
+    get the 8KB stack it asked for; when it does, `fetching` was left `true` forever with no task
+    running to ever set `fetch_done`, so `loopLibrary()` had nothing to process and the screen
+    stayed on the "Loading..." `setStatus()` had already put it in, buttons and all, with no way
+    out except a reboot. Fixed by checking the return value: on failure, `fetching` resets to
+    `false` and the existing retryable-error UI (`showError()`, same one an HTTP failure uses)
+    takes over instead. **The same unchecked-return pattern exists at the other three
+    `xTaskCreatePinnedToCore()` call sites in the project** (`VolumioHandler.cpp`'s `probeTask`,
+    `VolumioQueue.cpp`'s `queueTask`, `VolumioLibrary.cpp`'s own `folderActionTask`, and
+    `TuyaLights.cpp`'s `fetchTask`) -- not fixed there yet, flagged here since it's the same class
+    of bug and would show up as the same kind of "stuck forever" symptom in Queue/Lights/the
+    folder context menu if heap pressure ever hits mid-operation there instead.
+
+26. **The real cause of the Library freeze on "Music" (always page 3): LVGL's own memory pool,
+    exhausted by its default theme's button-state transition, hanging forever inside an assert.**
+    The `xTaskCreatePinnedToCore()` check above is real and worth keeping, but it wasn't what was
+    actually happening -- serial logging (temporarily reinstated, see item 15) pinned the freeze
+    to a specific point every single time: inside `updateNav()`'s `setEnabled(btn_next_page, ...)`
+    call, always on the third page of "Music" (the only folder with enough pages to page through
+    quickly). Read from LVGL's own source (`~/Arduino/libraries/lvgl/src/core/lv_obj_style.c` /
+    `lv_obj.c`), confirmed exactly, not guessed: Prev/Next/Up flip `LV_STATE_DISABLED` on *every*
+    page load (disabled during "Loading...", re-enabled once it's in) -- a real state change each
+    time, not a no-op -- and the default theme gives that an 80ms fade transition
+    (`LV_THEME_DEFAULT_TRANSITION_TIME`, `lv_conf.h`). Music's pages loaded in as little as 60ms,
+    faster than the fade, so a new transition kept starting before the old one's cleanup ran,
+    piling up `trans_t` nodes in LVGL's internal `style_trans_ll`. Those come from LVGL's *own*
+    allocator (`lv_malloc()`), which with `LV_MEM_CUSTOM 0` (`lv_conf.h`, the default) is a
+    `static` 48KB array totally separate from `ESP.getFreeHeap()` -- invisible to every heap check
+    this project has ever added, which is why nothing looked wrong right up to the freeze. Once
+    that pool was exhausted, `lv_malloc()` returned NULL, tripping `LV_USE_ASSERT_MALLOC`, whose
+    handler (`LV_ASSERT_HANDLER`, `lv_conf.h`) is `while(1);` -- a silent, permanent hang, no
+    crash, no reset, no watchdog (nothing was configured to catch it).
+    - **First fix tried: `LV_MEM_CUSTOM 1`** (`lv_conf.h`) -- point LVGL at the general heap
+      (`malloc`/`free`) instead of its own static pool, alongside moving `LvglHandler.cpp`'s
+      display buffer from a `static` array to `malloc()` (the same fixed-size-static-array-on-
+      this-chip lesson as item 17, needed because bumping `LV_MEM_SIZE` itself instead first hit
+      the *static DRAM segment*'s own tight ceiling -- `dram0_0_seg overflowed`, same failure mode
+      as item 17, at 128KB before the display buffer was even touched). **This fixed the Library
+      hang but broke Tuya**: `TuyaLights.cpp`'s HTTPS calls need a large contiguous heap block for
+      the TLS handshake (the same constraint item 11 already fought once), and LVGL's churn now
+      fragmented that same general heap enough that Tuya's calls started failing with "connection
+      refused" (`ensureToken()`/`fetchDeviceList()`, ultimately `tuyaRequest()`'s
+      `http.errorToString()`) -- the Lights screen came up with no device buttons at all. Caught
+      because the user noticed Lights had stopped working after this change went in; **reverted**.
+    - **Real fix: leave `LV_MEM_CUSTOM 0` (LVGL's own isolated pool, so its churn can't starve
+      Tuya's heap, as it always did before) and stop the actual waste** -- disable the transition
+      on the three nav buttons directly (`addNavButton()`, `VolumioLibrary.cpp`), since an instant
+      colour swap reads perfectly fine for a nav button and needed no transition in the first
+      place. **First attempt at that, `lv_obj_set_style_transition(b, NULL, selector)`, was
+      itself a crash**, also found by reading LVGL's source rather than guessing: `NULL` is a
+      valid *value* for the property (`lv_obj_set_style_transition()`'s only job is storing
+      whatever pointer it's given), but `obj_transition_states()` (`lv_obj.c`) treats "the
+      property was found" as "safe to dereference `.ptr`" with no NULL check, so the very next
+      real state change (the first folder entered, the first time Prev/Next/Up ever actually
+      disables) dereferenced NULL and crashed -- on reboot the device naturally lands back on the
+      default Player screen, which is exactly the symptom this looked like ("go back to
+      playback" right after tapping the first folder) and is easy to mistake for a navigation bug
+      rather than a crash+reboot. Fixed by giving it a real, valid, empty transition descriptor
+      instead (`lv_style_transition_dsc_init()` with a zero-length `props` array) -- a legitimate
+      "no properties transition" rather than a null pointer standing in for "no transition."
+    - **Takeaways for next time**: (1) a memory pool can be completely invisible to every heap
+      check in this codebase and still be the thing that runs out -- LVGL's own pool with
+      `LV_MEM_CUSTOM 0` is exactly that, on top of the two heap-visibility quirks already below.
+      (2) `LV_ASSERT_HANDLER`'s default `while(1);` turns any such exhaustion into a silent,
+      un-diagnosable-without-serial hang; if a similar freeze ever recurs with no heap symptom,
+      suspect this pool specifically before anything else. (3) Moving LVGL to the general heap is
+      not a free fix on this project -- Tuya's TLS needs are heap-hungry enough that the two now
+      compete if LVGL is allowed to share that heap; fixing LVGL's own waste is safer than giving
+      it more room to leak into. (4) `lv_conf.h` is shared machine-wide (item 2) -- both the
+      `LV_MEM_CUSTOM` flip and its revert happened there, so any future memory chase on an
+      unrelated sketch on this machine should check this file's history too.
+
+27. **Restart/Shut down moved into the scrollable menu grid.** They used to sit in their own fixed
+    row along the bottom of the full-screen menu, always visible and never affected by scrolling
+    (item 23). Per explicit request, they're now just the last two tiles in the same `menu_grid`
+    every other entry lives in -- reaching them means scrolling past the rest of the menu first,
+    like any tile that overflows the visible area. `addMenuAction()` (`UiHandler.cpp`) lost its
+    absolute `x`/fixed-`y` positioning and now creates its tile inside `menu_grid` (flex-wrap
+    placement, same as `addMenuEntry()`'s). The two calls that used to run from inside `setupUI()`
+    (before any screen had registered its own tile) moved into a new exported
+    `addSystemMenuActions()`, called once from `arduino32.ino`'s `setup()` **after** every
+    `addScreen()`/`addHiddenScreen()` -- calling it any earlier would put these two first, not
+    last, since `setupUI()` (which creates `menu_grid`) runs before any of the sketch's own
+    `addScreen()` calls. `menu_grid`'s height also grew from a fixed two-row `138` to
+    `SCREEN_HEIGHT - TOP_BAR_H` (fills the whole menu below the header) now that there's no
+    separate fixed row below it to leave room for. Confirmed on hardware.
+
+28. **The item 26 nav-button fix (empty transition descriptor) never actually worked, and the
+    Library freeze recurred; the real fix and a shared `PaginationNav.cpp` came out of chasing
+    it down again.** Reported after item 27's build was first flashed: same exact symptom as
+    item 26 (stuck on "Loading..." on Music's third page) despite item 26's fix being untouched
+    in the source. Reproduced once with temporary serial logging (`lv_mem_monitor()`, added and
+    removed the same way item 15/25 did) and once without -- inconclusive on its own (it happened
+    to not reproduce with the logging in place, which cost real time chasing a phantom "maybe it
+    was transient" theory before it recurred again on a clean build) -- what actually settled it
+    was reading `lv_theme_default.c` directly. The default theme attaches its OWN separate style
+    objects to every `lv_button` (`transition_delayed` at the DEFAULT selector,
+    `transition_normal` at `LV_STATE_PRESSED`, both transitioning `LV_STYLE_BG_COLOR` with a real
+    ~80ms fade) when the button is created. `obj_transition_states()` (`lv_obj.c`) scans every
+    style object attached to a widget independently and sums each one's own transition properties
+    -- there is no "local style overrides theme style" rule for `LV_STYLE_TRANSITION` specifically.
+    Item 26's fix only ever set an empty transition descriptor on *our own* local style at the
+    same selectors, which never touched the theme's separate objects at all -- it happened to
+    silence the `DISABLED`-state flip from page loads only because the theme's own `disabled`
+    style has no transition of its own to compete with, so there was nothing else contributing
+    there. Every rapid tap (press = enter `PRESSED`, release = leave it) kept independently piling
+    up real transitions via the theme's `PRESSED`/`DEFAULT` objects the entire time, unaffected by
+    item 26 -- which is exactly why this recurred under the same "paging quickly through Music"
+    trigger. There's no public handle to the theme's own style objects to remove just those, so
+    the real fix strips *every* theme-attached style from the button (`lv_obj_remove_style_all()`)
+    instead of trying to override it, keeping only the corner radius (captured before removal, so
+    the button doesn't visibly change) since every colour that matters is already set explicitly
+    per state. Two follow-on mistakes while building this, both caught on hardware, not in review:
+    (a) restoring only radius+bg_opa after the removal left the buttons looking visibly smaller,
+    because the theme's default button style also carries a drop shadow that was extending their
+    apparent footprint -- simplified away entirely (see (b)) rather than chased further; (b) a
+    later ask to double the buttons' width appeared to do nothing, twice, because `lv_obj_set_size()`
+    is itself backed by `LV_STYLE_WIDTH`/`HEIGHT` (`lv_obj_pos.c`) and was being called *before*
+    `lv_obj_remove_style_all()` in the same function -- the removal was wiping out the size right
+    after setting it. Fixed by moving the size call to after the removal, and simplified by
+    dropping the shadow-restoration path entirely (a flat button reads fine here; matching the
+    theme's exact drop shadow wasn't worth the extra lines it took to capture and restore).
+    **Extracted into `PaginationNav.cpp`** (`createPagerButton()`, `setPagerEnabled()`) once
+    settled, since `VolumioQueue.cpp` turned out to have its own separate, older copy of this same
+    button -- *without* this fix, or item 25's earlier one -- that was equally vulnerable to the
+    exact same freeze, just never hit because nobody had paged through a short-enough queue fast
+    enough to trigger it. Both `VolumioLibrary.cpp` and `VolumioQueue.cpp` now call the shared
+    version instead of each keeping their own copy in sync by hand.
+    **Takeaway added to the four in item 26**: (5) LVGL's per-object style override (setting the
+    same property locally) does not cancel a *theme-attached* style's own value for
+    `LV_STYLE_TRANSITION` specifically -- `obj_transition_states()` sums every attached style
+    object's transition props independently rather than doing highest-priority-wins for that one
+    property, so neutralizing a theme's transition on a specific widget needs
+    `lv_obj_remove_style_all()` (or removing the exact theme style object, if there's a handle to
+    it), not a local override at the same selector.
 
 - **LVGL's compiled-in fonts are ASCII-only** — the stock Montserrat fonts (`lv_conf.h`, shared,
   outside this repo) only cover code points 32-126 plus LVGL's own icon symbols (checked directly
@@ -374,3 +545,18 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   it runs deeper than that). Fixed by downgrading to the stable `esp32:esp32@3.3.11` core instead
   of chasing it further — don't reinstall the alpha core, and if a *different* HTTPS target ever
   fails, check `arduino-cli core list` before assuming it's a code bug.
+- **`arduino-cli`'s real incremental-build cache is `~/.cache/arduino/sketches/<hash>/`, not the
+  project's local `build/` directory.** Hit while adding the Artists screen: a compile failed at
+  the *link* step with `undefined reference to setup()/loop()` and no compile error for any
+  source file — deleting the local `build/` dir (`./arduino.sh clean`) and even the ESP32 core's
+  own cache (`~/.cache/arduino/cores/...`) didn't fix it. `--verbose` showed why: `Using
+  previously compiled file: .../sketch/arduino32.ino.cpp.o` — a stale/corrupt cached object for
+  the sketch itself (not a library) was being relinked instead of rebuilt. Root cause not
+  confirmed (never reproduced from a clean state), but the timing lines up with two
+  `arduino-cli compile` calls having overlapped shortly before (one from this session backgrounded
+  by a shell timeout, run right as another one started). Fixed by removing that sketch's whole
+  cache dir under `~/.cache/arduino/sketches/` (find it via `arduino-cli compile --verbose` and
+  look for `Using previously compiled file:` / `Using cached library dependencies for file:`
+  lines, or just `rm -rf ~/.cache/arduino/sketches/*` if unsure which hash is this sketch's) and
+  recompiling. If a compile ever fails at the link step with no source-level error, suspect this
+  cache before the code.

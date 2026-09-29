@@ -4,6 +4,7 @@
 #include "VolumioHandler.h"
 #include "VolumioLibrary.h"
 #include "VolumioQueue.h"
+#include "VolumioArtists.h"
 #include "TuyaLights.h"
 #include <WiFi.h>
 #include "arduino_secrets.h"
@@ -14,7 +15,11 @@ void setup() {
     setupUI();
     setupLibrary(addScreen("Library"));
     setupQueue(addScreen("Queue", refreshQueue));
+    setupArtists(addScreen("Artists"));
     setupTuyaLights(addScreen("Lights", refreshTuyaLights), addHiddenScreen());
+    // Must come after every addScreen() above -- it appends Restart/Shut down as the grid's last
+    // two tiles, so they land after all of these instead of wherever setupUI() itself ran.
+    addSystemMenuActions();
     WiFi.begin(SECRET_SSID, SECRET_PASS);
     while (WiFi.status() != WL_CONNECTED) delay(100);
     configTzTime(SECRET_TIMEZONE, "pool.ntp.org");

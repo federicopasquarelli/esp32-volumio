@@ -153,9 +153,9 @@ static void menu_item_cb(lv_event_t* e) {
 
 // One big tile in the menu grid, navigating to target when tapped. Used both for the Player entry
 // and for every screen registered via addScreen(). Two columns of 146px fill the grid's 300px of
-// usable width; four tiles fill its two rows, and any more just make it scroll. The two system
-// actions sit in their own row below the grid (see addMenuAction()) so they stay last no matter
-// how many screens get registered after them.
+// usable width; four tiles fill its first two rows, and any more (including the two system-action
+// tiles added last, see addSystemMenuActions()) just make the grid scroll -- nothing is pinned
+// outside the scrollable area anymore.
 static void addMenuEntry(const char* name, lv_obj_t* target) {
     lv_obj_t* tile = lv_button_create(menu_grid);
     lv_obj_set_size(tile, 146, 56);
@@ -205,12 +205,15 @@ static void action_tile_cb(lv_event_t* e) {
     lv_obj_remove_flag(confirm_layer, LV_OBJ_FLAG_HIDDEN);
 }
 
-// A tile in the row along the bottom of the menu. Grey outline instead of the accent the
-// navigation tiles use, so the destructive ones don't read as just another destination.
-static void addMenuAction(const char* label, int x, const MenuAction* action) {
-    lv_obj_t* tile = lv_button_create(menu_list);
+// A tile in the same scrollable grid as addMenuEntry()'s, for a destructive system action instead
+// of a navigation target. Grey outline instead of the accent the navigation tiles use, so these
+// don't read as just another destination. No absolute position: like every other grid tile, its
+// spot comes from flex wrap, in whatever order addMenuAction() is called -- see
+// addSystemMenuActions() for why that's deferred until after every screen has registered its own
+// tile, so Restart/Shut down end up last instead of wherever setupUI() itself happened to run.
+static void addMenuAction(const char* label, const MenuAction* action) {
+    lv_obj_t* tile = lv_button_create(menu_grid);
     lv_obj_set_size(tile, 146, 56);
-    lv_obj_set_pos(tile, x, 174);
     set_btn_inactive_style(tile);
     lv_obj_set_style_border_color(tile, lv_color_hex(0x555555), 0);
     lv_obj_set_style_radius(tile, 12, 0);
@@ -219,6 +222,17 @@ static void addMenuAction(const char* label, int x, const MenuAction* action) {
     lv_obj_set_style_text_font(tile_label, &lv_font_montserrat_ext_18, 0);
     lv_label_set_text(tile_label, label);
     lv_obj_center(tile_label);
+}
+
+// Adds the Restart/Shut down tiles to the end of the menu grid. Must be called once, after every
+// addScreen()/addHiddenScreen() in setup() has already run its addMenuEntry() -- setupUI() itself
+// runs before any of those (it's what creates menu_grid in the first place), so if these were
+// added from inside setupUI() they'd land first, not last. Calling this from arduino32.ino's
+// setup(), after the last addScreen(), is what makes them require scrolling past the rest of the
+// menu to reach, instead of being pinned in their own fixed row below it (the previous behavior).
+void addSystemMenuActions() {
+    addMenuAction(LV_SYMBOL_REFRESH "  Restart", &restart_action);
+    addMenuAction(LV_SYMBOL_POWER "  Shut down", &shutdown_action);
 }
 
 void setupUI() {
@@ -280,21 +294,21 @@ void setupUI() {
 
     menu_grid = lv_obj_create(menu_list);
     lv_obj_set_pos(menu_grid, 0, TOP_BAR_H);
-    lv_obj_set_size(menu_grid, SCREEN_WIDTH, 138);  // two rows of tiles; the actions row starts right below
+    // Fills the rest of the menu below the header, not just enough for two rows -- every tile
+    // (nav screens + the two system actions, added last via addSystemMenuActions()) lives in this
+    // one scrollable grid now, so there's no separate fixed row to size around anymore.
+    lv_obj_set_size(menu_grid, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_H);
     lv_obj_set_style_bg_opa(menu_grid, LV_OPA_TRANSP, 0);
     lv_obj_set_style_radius(menu_grid, 0, 0);
     lv_obj_set_style_border_width(menu_grid, 0, 0);
     lv_obj_set_style_pad_left(menu_grid, 10, 0);
     lv_obj_set_style_pad_right(menu_grid, 10, 0);
     lv_obj_set_style_pad_top(menu_grid, 6, 0);
-    lv_obj_set_style_pad_bottom(menu_grid, 0, 0);
+    lv_obj_set_style_pad_bottom(menu_grid, 6, 0);
     lv_obj_set_style_pad_row(menu_grid, 8, 0);
     lv_obj_set_style_pad_column(menu_grid, 8, 0);
-    lv_obj_set_scroll_dir(menu_grid, LV_DIR_VER);  // only matters once there are more than 4 tiles
+    lv_obj_set_scroll_dir(menu_grid, LV_DIR_VER);  // only matters once the tiles overflow the visible area
     lv_obj_set_flex_flow(menu_grid, LV_FLEX_FLOW_ROW_WRAP);
-
-    addMenuAction(LV_SYMBOL_REFRESH "  Restart", 10, &restart_action);
-    addMenuAction(LV_SYMBOL_POWER "  Shut down", 164, &shutdown_action);
 
     // Confirm dialog, over the whole menu: a dimmed backdrop that also swallows taps on the tiles
     // behind it, and a centered panel with a title, a one-line consequence, Cancel and the action.

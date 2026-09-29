@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 #include "VolumioHandler.h"
 #include "CustomFonts.h"
+#include "PaginationNav.h"
 
 #define LIB_ROOT_URI   "music-library"
 #define LIB_PAGE_SIZE  4
@@ -34,10 +35,14 @@ static int page = 0;
 // client-side (that used to reserve a 200-item array, ~49KB, permanently at boot).
 static LibItem items[LIB_PAGE_SIZE];
 static int item_count = 0;
-// True if the last fetch returned a full page, i.e. there's probably a next page. Can be a false
-// positive when the folder has exactly a multiple of LIB_PAGE_SIZE items (Next then loads an
-// empty page) -- harmless, Prev still gets you back.
+// True if there's a next page. Backed by "count" -- the folder's real total item count, which
+// Volumio includes in the list alongside the page whenever offset/limit are passed -- so this is
+// exact, not a guess from the page being full. Falls back to the old "was the page full?" guess
+// only if a response is ever missing "count" (e.g. an older Volumio version).
 static bool has_more = false;
+// Total items in the folder being shown, from the last fetch's "count"; -1 if the response didn't
+// include one (falls back to per-page guessing, see has_more above).
+static int total_count = -1;
 
 // URIs of the folders we entered, the last one is the folder being shown.
 static char path_stack[LIB_MAX_DEPTH][LIB_URI_LEN];
@@ -97,6 +102,7 @@ static void fetchTask(void*) {
         filter["navigation"]["lists"][0]["items"][0]["type"] = true;
         filter["navigation"]["lists"][0]["items"][0]["uri"] = true;
         filter["navigation"]["lists"][0]["items"][0]["service"] = true;
+        filter["navigation"]["lists"][0]["count"] = true;
 
         JsonDocument doc;
         DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
@@ -104,7 +110,9 @@ static void fetchTask(void*) {
             strlcpy(fetch_error, "Invalid response", sizeof(fetch_error));
         } else {
             item_count = 0;
+            total_count = -1;
             for (JsonObject list : doc["navigation"]["lists"].as<JsonArray>()) {
+                if (list["count"].is<int>()) total_count = list["count"].as<int>();
                 for (JsonObject it : list["items"].as<JsonArray>()) {
                     if (item_count >= LIB_PAGE_SIZE) break;
                     LibItem& dst = items[item_count++];
@@ -114,7 +122,9 @@ static void fetchTask(void*) {
                     dst.isFolder = isFolderType(it["type"] | "");
                 }
             }
-            has_more = (item_count == LIB_PAGE_SIZE);
+            has_more = total_count >= 0
+                ? (fetch_page + 1) * LIB_PAGE_SIZE < total_count
+                : (item_count == LIB_PAGE_SIZE);  // no "count" in the response -- fall back to guessing
         }
     }
 
@@ -124,30 +134,42 @@ static void fetchTask(void*) {
     vTaskDelete(NULL);
 }
 
+static void showError(const char* error);  // defined further down, used by startFetch() below
+
 static void startFetch(const char* uri, int pageToFetch) {
     if (fetching) return;
     fetching = true;
     strlcpy(fetch_uri, uri, sizeof(fetch_uri));
     fetch_page = pageToFetch;
-    xTaskCreatePinnedToCore(fetchTask, "LibFetch", 8192, NULL, 1, NULL, 1);
+    // Return value checked: a task creation failure (e.g. a fragmented heap unable to give up
+    // the 8KB stack -- see the heap quirks in CLAUDE.md) used to leave `fetching` stuck true
+    // forever, since no task meant fetch_done never got set and loopLibrary() never ran --
+    // the screen stayed on "Loading..." with Prev/Next/Up permanently disabled. Now it falls
+    // back to the same retryable error UI an HTTP failure uses instead.
+    if (xTaskCreatePinnedToCore(fetchTask, "LibFetch", 8192, NULL, 1, NULL, 1) != pdPASS) {
+        fetching = false;
+        showError("Out of memory, try again");
+    }
 }
 
-static void setEnabled(lv_obj_t* obj, bool enabled) {
-    if (enabled) lv_obj_remove_state(obj, LV_STATE_DISABLED);
-    else lv_obj_add_state(obj, LV_STATE_DISABLED);
-}
-
-// listing is false while loading or showing an error, when paging makes no sense. There's no
-// running page total anymore (each page is its own fetch, not a slice of something already in
-// full), so this just shows the current page number.
+// listing is false while loading or showing an error, when paging makes no sense. Shows
+// "current/total" pages when the last fetch's response told us the folder's total item count
+// (see total_count), otherwise just the current page number.
 static void updateNav(bool listing) {
-    char txt[8];
-    if (listing) snprintf(txt, sizeof(txt), "%d", page + 1);
-    else strlcpy(txt, "-", sizeof(txt));
+    char txt[16];
+    if (listing && total_count >= 0) {
+        int total_pages = (total_count + LIB_PAGE_SIZE - 1) / LIB_PAGE_SIZE;
+        if (total_pages < 1) total_pages = 1;  // an empty folder is still "page 1 of 1"
+        snprintf(txt, sizeof(txt), "%d/%d", page + 1, total_pages);
+    } else if (listing) {
+        snprintf(txt, sizeof(txt), "%d", page + 1);
+    } else {
+        strlcpy(txt, "-", sizeof(txt));
+    }
     lv_label_set_text(label_page, txt);
-    setEnabled(btn_up, path_depth > 1);
-    setEnabled(btn_prev_page, listing && page > 0);
-    setEnabled(btn_next_page, listing && has_more);
+    setPagerEnabled(btn_up, path_depth > 1);
+    setPagerEnabled(btn_prev_page, listing && page > 0);
+    setPagerEnabled(btn_next_page, listing && has_more);
 }
 
 static void setStatus(const char* text) {
@@ -391,24 +413,6 @@ static void next_page_cb(lv_event_t*) {
     startFetch(path_stack[path_depth - 1], pending_page);
 }
 
-static lv_obj_t* addNavButton(lv_obj_t* bar, const char* symbol, lv_event_cb_t cb) {
-    lv_obj_t* b = lv_button_create(bar);
-    lv_obj_set_size(b, 70, LIB_ROW_H - 4);
-    // Enabled buttons are filled with the accent, disabled ones are empty, like the tab labels.
-    lv_obj_set_style_bg_color(b, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(0x19A34A), LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(b, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(0x000000), LV_STATE_DISABLED);
-    lv_obj_set_style_text_color(b, lv_color_hex(0xAAAAAA), LV_STATE_DISABLED);
-    lv_obj_set_style_border_width(b, 1, LV_STATE_DISABLED);
-    lv_obj_set_style_border_color(b, lv_color_hex(COLOR_ACCENT), LV_STATE_DISABLED);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t* l = lv_label_create(b);
-    lv_label_set_text(l, symbol);
-    lv_obj_center(l);
-    return b;
-}
-
 void setupLibrary(lv_obj_t* parent_tab) {
     tab_library = parent_tab;
 
@@ -438,11 +442,11 @@ void setupLibrary(lv_obj_t* parent_tab) {
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    btn_up = addNavButton(bar, LV_SYMBOL_UP, up_cb);
-    btn_prev_page = addNavButton(bar, LV_SYMBOL_LEFT, prev_page_cb);
+    btn_up = createPagerButton(bar, 140, LIB_ROW_H - 4, LV_SYMBOL_UP, up_cb);
+    btn_prev_page = createPagerButton(bar, 140, LIB_ROW_H - 4, LV_SYMBOL_LEFT, prev_page_cb);
     label_page = lv_label_create(bar);
     lv_obj_set_style_text_color(label_page, lv_color_hex(0xFFFFFF), 0);
-    btn_next_page = addNavButton(bar, LV_SYMBOL_RIGHT, next_page_cb);
+    btn_next_page = createPagerButton(bar, 140, LIB_ROW_H - 4, LV_SYMBOL_RIGHT, next_page_cb);
     updateNav(false);
 }
 
