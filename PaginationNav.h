@@ -27,4 +27,13 @@ lv_obj_t* createPagerButton(lv_obj_t* parent, int32_t width, int32_t height,
 // internally if the state doesn't actually change, so this is just a readable if/else over that.
 void setPagerEnabled(lv_obj_t* obj, bool enabled);
 
+// Formats a paginated list's page-indicator label into buf: "-" while not listing (loading or
+// showing an error, when paging makes no sense); "<page+1>/<total pages> (<total_count>)" when
+// the real total item count is known; just "<page+1>" as a fallback when it isn't. `page` is
+// 0-based. `total_count` < 0 means "unknown" (e.g. an older Volumio response missing its "count"
+// field) -- pass the real, always-known total (like Queue's fully-fetched item_count) whenever
+// there is one. Shared by every paginated screen (Library/Queue/Artists/ArtistTracks) so a format
+// change like adding the item count only has to happen once.
+void formatPageLabel(char* buf, size_t bufsize, bool listing, int page, int page_size, int total_count);
+
 #endif

@@ -37,3 +37,19 @@ void setPagerEnabled(lv_obj_t* obj, bool enabled) {
     if (enabled) lv_obj_remove_state(obj, LV_STATE_DISABLED);
     else lv_obj_add_state(obj, LV_STATE_DISABLED);
 }
+
+void formatPageLabel(char* buf, size_t bufsize, bool listing, int page, int page_size, int total_count) {
+    if (!listing) {
+        strlcpy(buf, "-", bufsize);
+        return;
+    }
+    if (total_count >= 0) {
+        int total_pages = (total_count + page_size - 1) / page_size;
+        if (total_pages < 1) total_pages = 1;  // an empty list is still "page 1 of 1"
+        snprintf(buf, bufsize, "%d/%d (%d)", page + 1, total_pages, total_count);
+    } else {
+        // No real total available (e.g. an older Volumio response missing "count") -- fall back
+        // to just the current page number.
+        snprintf(buf, bufsize, "%d", page + 1);
+    }
+}

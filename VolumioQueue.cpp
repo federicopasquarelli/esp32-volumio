@@ -120,12 +120,13 @@ static int pageCount() {
     return pages > 0 ? pages : 1;
 }
 
-// listing is false while loading or showing an error, when paging makes no sense.
+// listing is false while loading or showing an error, when paging makes no sense. Queue always
+// knows its real total (the whole queue is fetched up front), so formatPageLabel() always shows
+// "current/total (item count)" while listing, never the unknown-total fallback.
 static void updateNav(bool listing) {
     int pages = pageCount();
-    char txt[16];
-    if (listing) snprintf(txt, sizeof(txt), "%d/%d", page + 1, pages);
-    else strlcpy(txt, "-", sizeof(txt));
+    char txt[24];
+    formatPageLabel(txt, sizeof(txt), listing, page, QUEUE_PAGE_SIZE, item_count);
     lv_label_set_text(label_page, txt);
     setPagerEnabled(btn_clear, listing && item_count > 0);
     setPagerEnabled(btn_prev_page, listing && page > 0);

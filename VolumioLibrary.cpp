@@ -153,19 +153,12 @@ static void startFetch(const char* uri, int pageToFetch) {
 }
 
 // listing is false while loading or showing an error, when paging makes no sense. Shows
-// "current/total" pages when the last fetch's response told us the folder's total item count
-// (see total_count), otherwise just the current page number.
+// "current/total (item count)" when the last fetch's response told us the folder's total item
+// count (see total_count), otherwise just the current page number -- see PaginationNav.cpp's
+// formatPageLabel(), shared by every paginated screen.
 static void updateNav(bool listing) {
-    char txt[16];
-    if (listing && total_count >= 0) {
-        int total_pages = (total_count + LIB_PAGE_SIZE - 1) / LIB_PAGE_SIZE;
-        if (total_pages < 1) total_pages = 1;  // an empty folder is still "page 1 of 1"
-        snprintf(txt, sizeof(txt), "%d/%d", page + 1, total_pages);
-    } else if (listing) {
-        snprintf(txt, sizeof(txt), "%d", page + 1);
-    } else {
-        strlcpy(txt, "-", sizeof(txt));
-    }
+    char txt[24];
+    formatPageLabel(txt, sizeof(txt), listing, page, LIB_PAGE_SIZE, total_count);
     lv_label_set_text(label_page, txt);
     setPagerEnabled(btn_up, path_depth > 1);
     setPagerEnabled(btn_prev_page, listing && page > 0);
@@ -447,11 +440,11 @@ void buildLibrary(lv_obj_t* parent) {
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    btn_up = createPagerButton(bar, 140, LIB_ROW_H - 4, LV_SYMBOL_UP, up_cb);
-    btn_prev_page = createPagerButton(bar, 140, LIB_ROW_H - 4, LV_SYMBOL_LEFT, prev_page_cb);
+    btn_up = createPagerButton(bar, 70, LIB_ROW_H - 4, LV_SYMBOL_UP, up_cb);
+    btn_prev_page = createPagerButton(bar, 70, LIB_ROW_H - 4, LV_SYMBOL_LEFT, prev_page_cb);
     label_page = lv_label_create(bar);
     lv_obj_set_style_text_color(label_page, lv_color_hex(0xFFFFFF), 0);
-    btn_next_page = createPagerButton(bar, 140, LIB_ROW_H - 4, LV_SYMBOL_RIGHT, next_page_cb);
+    btn_next_page = createPagerButton(bar, 70, LIB_ROW_H - 4, LV_SYMBOL_RIGHT, next_page_cb);
     updateNav(false);
 }
 
