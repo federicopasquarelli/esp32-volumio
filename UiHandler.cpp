@@ -4,7 +4,7 @@
 #include "CustomFonts.h"
 #include <time.h>
 
-#define MAX_SCREENS 6
+#define MAX_SCREENS 8
 
 static lv_obj_t *label_top, *cont_player, *btn_menu, *menu_list, *menu_grid, *label_title, *label_artist, *label_album;
 static lv_obj_t *confirm_layer, *confirm_title, *confirm_note, *confirm_ok_btn, *confirm_ok_label;

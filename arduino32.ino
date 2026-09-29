@@ -5,6 +5,7 @@
 #include "VolumioLibrary.h"
 #include "VolumioQueue.h"
 #include "VolumioArtists.h"
+#include "VolumioArtistTracks.h"
 #include "TuyaLights.h"
 #include <WiFi.h>
 #include "arduino_secrets.h"
@@ -20,7 +21,9 @@ void setup() {
     // below; the first showScreen() to each now triggers them instead).
     setupLibrary(addScreen("Library", buildLibrary, refreshLibrary, hideLibrary));
     setupQueue(addScreen("Queue", buildQueue, refreshQueue, hideQueue));
-    addScreen("Artists", buildArtists, NULL, hideArtists);
+    lv_obj_t* artistsScreen = addScreen("Artists", buildArtists, refreshArtists, hideArtists);
+    setupArtistTracks(artistsScreen,
+                       addHiddenScreen(buildArtistTracks, refreshArtistTracks, hideArtistTracks));
     setupTuyaLights(addScreen("Lights", buildLights, refreshTuyaLights, hideLights),
                      addHiddenScreen(buildBrightnessPage, refreshBrightnessPage, hideBrightnessPage));
     // Must come after every addScreen() above -- it appends Restart/Shut down as the grid's last
@@ -41,6 +44,8 @@ void loop() {
     loopVolumio();
     loopLibrary();
     loopQueue();
+    loopArtists();
+    loopArtistTracks();
     loopTuyaLights();
     static unsigned long last_clock = 0;
     if (millis() - last_clock > 1000) {

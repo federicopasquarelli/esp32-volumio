@@ -71,9 +71,15 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
 - [PaginationNav.cpp](PaginationNav.cpp) — `createPagerButton()`/`setPagerEnabled()`, the styled
   nav button (Prev/Next/Up/Clear) shared by Library and Queue's bottom bars -- see item 28.
 - [VolumioArtists.cpp](VolumioArtists.cpp) — Artists screen (dropdown entry, via `addScreen`).
-  Currently just a "Coming soon" placeholder — see item 24. Lazy-built/freed like every other
-  screen (item 29) via `buildArtists()`/`hideArtists()`, though there's nothing to gain from it
-  yet at this placeholder's size.
+  Flat, paginated list of every artist, browsing `artists://` the same way `VolumioLibrary.cpp`
+  browses `music-library` -- see item 30. Lazy-built/freed like every other screen (item 29) via
+  `buildArtists()`/`refreshArtists()`/`hideArtists()`. Tapping an artist opens
+  `VolumioArtistTracks.cpp`'s screen -- see item 31 for why that's tracks only, no album browsing.
+  Long-press opens a context menu (Play / Add to queue / Clear and play) -- see item 32.
+- [VolumioArtistTracks.cpp](VolumioArtistTracks.cpp) — per-artist track list (hidden screen, no
+  dropdown entry, opened via `openArtistTracks()` from `VolumioArtists.cpp`). Paginated, tap a
+  track to play it (addToQueue + play-Nth, same shape as `VolumioLibrary.cpp`'s `ACTION_PLAY`) --
+  see item 31.
 - [DisplayConfig.h](DisplayConfig.h) — pins, screen dims, shared constants (`COLOR_ACCENT`,
   `TOP_BAR_H`, `SCREEN_TIMEOUT_MS`).
 - [CustomFonts.h](CustomFonts.h) + `font_montserrat_ext_{12,14,18,32}.c` — Montserrat fonts
@@ -573,6 +579,81 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
       original trigger (several folders deep in Library, then switch to Lights) multiple times in
       a row, and Tuya Lights stayed reliable throughout the same test with `LV_MEM_SIZE` back at
       its original 48KB.
+
+30. **Artists screen: flat, paginated list, on the item 29 lazy-load pattern from the start.**
+    Replaced the "Coming soon" placeholder (item 24). Checked live against `volumio.local` (a
+    119-artist library): `/api/v1/browse?uri=artists://` takes the identical `offset`/`limit`
+    Library's `music-library` browsing already uses (item 11), and returns the identical `count`
+    (the real total, item 25) once those are passed -- so `VolumioArtists.cpp` is essentially
+    `VolumioLibrary.cpp`'s fetch/paginate/nav-button machinery (including the
+    `xTaskCreatePinnedToCore` return-value check from item 25's follow-up) trimmed to a single
+    flat level: no folder stack, no "Up" button, no long-press context menu, no track playback.
+    Unlike its first implementation earlier in this project's history (built before item 29's
+    lazy-load pattern existed, and reverted before ever reaching hardware), this one was written
+    directly against the final pattern: `buildArtists()`/`refreshArtists()`/`hideArtists()` are
+    `addScreen()`'s on_build/on_show/on_hide from day one, and `loopArtists()` has the same
+    torn-down-widgets discard guard every other screen's loop function has.
+    - **Drill-down into an artist is deliberately not implemented.** Checked live: browsing into
+      `artists://<name>` (e.g. `artists://Arctic%20Monkeys`) returns **two separate lists** in
+      `navigation.lists[]` -- "Albums (Artist)" and "Tracks (Artist)" -- each with its own
+      independent `items`/`count`, rather than the single list every other browse response
+      (folders, and the artist root itself) has. Passing `offset`/`limit` on that request appears
+      to slice each list independently (an artist with 1 album/12 tracks and `limit=2` came back
+      with the full 1-item Albums list untouched but only 2 of the 12 Tracks) rather than treating
+      the two lists as one combined, offset-able sequence. Building a UI for that (two counters,
+      two independent Prev/Next pairs, or some other layout) was deferred at the time -- **picked
+      up in item 31**, which sidesteps the two-list problem entirely by only ever showing Tracks.
+
+31. **Artist tracks: tapping an artist opens a paginated list of their songs (new
+    `VolumioArtistTracks.cpp`), tap-to-play, no album browsing.** Item 30 confirmed browsing
+    `artists://<name>` returns two independent lists (`Albums (<name>)`, `Tracks (<name>)`);
+    rather than build UI for both, this only ever reads the one whose `title` starts with
+    `"Tracks"` (matched by prefix, not array position, in case Volumio ever reorders them) and
+    ignores Albums entirely -- confirmed live that `offset`/`limit` slices the Tracks list
+    correctly on its own (`count` stays accurate across pages) regardless of what's in Albums.
+    Each track item comes back with the same `service`/`uri`/`title` shape as a Library track
+    (`uri` like `music-library/USB/.../song.flac`), so tapping one to play reuses the exact
+    addToQueue + play-Nth pattern `VolumioLibrary.cpp`'s `ACTION_PLAY` already uses (queue length,
+    `addToQueue`, `commands/?cmd=play&N=`), duplicated locally rather than exported since
+    Library's version is `static`/private to that file.
+    - **The artist's `uri` from the Artists list must NOT be re-encoded.** Volumio returns it
+      already percent-encoded where it itself encodes things (confirmed live:
+      `"uri": "artists://Arctic%20Monkeys"`, space as `%20`, colon/slashes left raw) -- passing it
+      through the project's usual `urlEncode()` helper a second time turns `%20` into `%2520`
+      (percent-encoding the literal `%` character) and breaks the request. Confirmed live that
+      using the uri exactly as given, unencoded further, works correctly. If a similar uri ever
+      needs re-fetching elsewhere, check whether it came from Volumio's own response (already
+      encoded, use as-is) versus being hand-built (needs `urlEncode()`), rather than assuming one
+      rule everywhere.
+    - Built directly on the item 29 lazy-load pattern from the start (a new hidden screen, no
+      dropdown entry, opened via `openArtistTracks(uri, name)`): `buildArtistTracks()`/
+      `refreshArtistTracks()`/`hideArtistTracks()` are `addHiddenScreen()`'s on_build/on_show/
+      on_hide, `loopArtistTracks()` has the same torn-down-widgets discard guard every other
+      screen's loop function has, and `setupArtistTracks(artistsScreen, tracksScreen)` stores the
+      Artists screen reference Back needs (`arduino32.ino` passes `addScreen("Artists", ...)`'s
+      own return value straight into it). Unlike Library's "remember position across a hide,"
+      `openArtistTracks()` always resets to page 0 -- opening this screen is always a fresh
+      navigation to whichever artist was just tapped (possibly a different one each time), not a
+      return to a paused state.
+    - `MAX_SCREENS` in `UiHandler.cpp` bumped 6 -> 8 for headroom (this screen brought the count
+      already in use to 6, its exact old ceiling).
+    - Confirmed on hardware: tapping a track starts playback and Back returns to the Artists list.
+
+32. **Long-press an artist for the same Play / Add to queue / Clear and play menu Library's
+    folders have** (item 3), minus "Update folder" -- an artist here is a virtual grouping across
+    however many real folders, not something Volumio can rescan as a single unit the way a folder
+    can. Confirmed live against `volumio.local` before implementing: `addToQueue` with an artist's
+    own `uri` (`artists://<name>`, exactly as given by the `artists://` list, not re-encoded --
+    same caution as item 31) queues every one of that artist's tracks, the same way a folder's uri
+    does for `VolumioLibrary.cpp` -- queue length went from 81 to 93 for a 12-track artist in the
+    live test. `VolumioArtists.cpp` gained the same `PRESSED`/`LONG_PRESSED`/`CLICKED` +
+    `long_press_handled` row-event pattern Library's `item_cb()` already uses (a tap still opens
+    the track list, item 31, unless the press was already consumed as a long-press), and a
+    duplicate (not exported/shared) copy of Library's `postJson()`/`queueLength()`/action-task
+    machinery, since Library's is `static` to that file. One difference from Library's version:
+    the request body's `"service"` is hardcoded to `"mpd"` rather than read from the item, since
+    artist entries from `artists://` don't carry their own `service` field the way folder/track
+    items do.
 
 - **LVGL's compiled-in fonts are ASCII-only** — the stock Montserrat fonts (`lv_conf.h`, shared,
   outside this repo) only cover code points 32-126 plus LVGL's own icon symbols (checked directly
