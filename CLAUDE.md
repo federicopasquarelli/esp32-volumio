@@ -48,19 +48,32 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   the screen-timeout/backlight-off-after-3-minutes logic and wake-on-touch.
 - [TouchHandler.cpp](TouchHandler.cpp) — XPT2046 touch reading, noise filtering.
 - [UiHandler.cpp](UiHandler.cpp) — top bar (clock, dropdown menu / back button), the player screen
-  (art, title/artist/album, transport buttons, volume), and `addScreen()`, the mechanism Library/
-  Queue use to register a full-screen page reachable from the dropdown.
+  (art, title/artist/album, transport buttons, volume), and `addScreen()`/`addHiddenScreen()`, the
+  mechanism every other screen registers a full-screen page through. Since item 29, every screen
+  is lazy-built and freed on hide: `addScreen(name, on_build, on_show, on_hide)` calls `on_build`
+  the first time a screen is shown (construct its widgets into the given container), `on_show`
+  every time (load/refresh its data), and `on_hide` when navigating away (tear the widgets back
+  down, freeing them from LVGL's memory pool). The player and the full-screen menu overlay are the
+  two exceptions, built once and kept alive for the app's lifetime -- see item 29 for why.
 - [VolumioHandler.cpp](VolumioHandler.cpp) — the WebSocket connection to Volumio
   (`/socket.io/?EIO=3&transport=websocket`), playback control commands.
 - [VolumioLibrary.cpp](VolumioLibrary.cpp) — music library browser (folders), HTTP polling via
   `/api/v1/browse`, paginated list UI, long-press context menu (play / queue / clear+play /
-  update folder).
+  update folder). Lazy-built/freed (item 29): `buildLibrary()`/`refreshLibrary()`/`hideLibrary()`
+  are `addScreen()`'s on_build/on_show/on_hide -- the current folder/page are kept across a hide
+  (small state, not LVGL objects) so reopening rebuilds the same view instead of resetting to the
+  root.
 - [VolumioQueue.cpp](VolumioQueue.cpp) — queue viewer/editor, HTTP via `/api/v1/getQueue` +
-  `/api/v1/commands/?cmd=...`, per-item remove button.
+  `/api/v1/commands/?cmd=...`, per-item remove button. Lazy-built/freed (item 29):
+  `buildQueue()`/`refreshQueue()`/`hideQueue()`; `hideQueue()` also frees the 19.2KB `titles[]`
+  buffer back to the general heap (unless a fetch is still writing to it, see the function's own
+  comment).
 - [PaginationNav.cpp](PaginationNav.cpp) — `createPagerButton()`/`setPagerEnabled()`, the styled
   nav button (Prev/Next/Up/Clear) shared by Library and Queue's bottom bars -- see item 28.
 - [VolumioArtists.cpp](VolumioArtists.cpp) — Artists screen (dropdown entry, via `addScreen`).
-  Currently just a "Coming soon" placeholder — see item 24.
+  Currently just a "Coming soon" placeholder — see item 24. Lazy-built/freed like every other
+  screen (item 29) via `buildArtists()`/`hideArtists()`, though there's nothing to gain from it
+  yet at this placeholder's size.
 - [DisplayConfig.h](DisplayConfig.h) — pins, screen dims, shared constants (`COLOR_ACCENT`,
   `TOP_BAR_H`, `SCREEN_TIMEOUT_MS`).
 - [CustomFonts.h](CustomFonts.h) + `font_montserrat_ext_{12,14,18,32}.c` — Montserrat fonts
@@ -69,10 +82,14 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   them.
 - [TuyaLights.cpp](TuyaLights.cpp) — "Lights" screen (dropdown entry, via `addScreen`).
   Authenticates against the Tuya Cloud API (`openapi.tuyaeu.com`, Simple mode signing), lists up
-  to 5 devices (`/v2.0/cloud/thing/device?page_size=5`) with their live switch state
-  (`GET .../status`, code `switch_led`) on screen-open, and tapping one toggles it
-  (`POST .../commands`); long-pressing one opens a hidden per-light brightness page (slider +
-  Back button). No unlink/remove action, by design.
+  to 5 devices (`/v2.0/cloud/thing/device?page_size=5`) with their live switch state fetched in a
+  single batch call (`GET .../status?device_ids=...`, code `switch_led` -- item 29), and tapping
+  one toggles it (`POST .../commands`); long-pressing one opens a hidden per-light brightness page
+  (slider + colour palette + Back button). No unlink/remove action, by design. Both the main list
+  and the brightness page are lazy-built/freed (item 29): `buildLights()`/`refreshTuyaLights()`/
+  `hideLights()` and `buildBrightnessPage()`/`refreshBrightnessPage()`/`hideBrightnessPage()`.
+  `tuyaRequest()`'s `WiFiClientSecure`/`HTTPClient` are kept alive across calls (item 29) instead
+  of a fresh TLS handshake every time.
 
 ## Session history (chronological, most recent last)
 
@@ -100,7 +117,8 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
    on any other screen, never both). `addScreen(name, on_show)` in `UiHandler.cpp` is the
    generic mechanism: creates a hidden full-screen container, registers it, adds its dropdown
    entry. `on_show` (optional) fires every time that screen becomes visible — used by Queue to
-   refresh itself.
+   refresh itself. **Signature grew to `addScreen(name, on_build, on_show, on_hide)` in item 29**
+   once screens needed to build/free their widgets lazily instead of always existing from setup().
 6. **Player screen redesign** to match a reference screenshot: album art placeholder (top-left)
    + title/artist/album to its right, elapsed/duration as plain text (no progress bar — never
    asked for), big round play/pause button centered with prev/next flanking it and
@@ -473,6 +491,88 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     property, so neutralizing a theme's transition on a specific widget needs
     `lv_obj_remove_style_all()` (or removing the exact theme style object, if there's a handle to
     it), not a local override at the same selector.
+
+29. **A second, different freeze ("back to Player" after navigating Library) turned out to be a
+    much bigger structural problem: every screen's full widget tree sat permanently in LVGL's
+    48KB pool from boot, whether or not it was ever opened -- and Library/Tuya's real needs don't
+    both fit in what's left over.** Reported right after item 27's menu-grid build was first
+    flashed: same freeze symptom as item 26 (stuck on "Loading...", every touch dead), but this
+    time triggered by switching from a folder a few levels deep in Library back to the Player
+    screen, not by rapid Prev/Next taps. Diagnosed with `lv_mem_monitor()` checkpoints after each
+    `setup()` step (temporarily reinstated per item 15's pattern): the pool was **already at
+    54-88% used just from every screen's widgets existing**, before any navigation --
+    `setupUI` (header/menu/dialog/player) 6180 bytes, Library 3128, Queue 3116, Artists 1092,
+    Lights 7020 (almost all of it the brightness/colour sub-page's slider + 12 round swatches),
+    Restart/Shutdown tiles 1216. A few folders into Library left as little as ~1.3KB free, and the
+    Player screen's own render pass on switching to it needed more than that -- same
+    `LV_ASSERT_HANDLER` hang as item 26, different trigger.
+    - **`LV_MEM_SIZE` alone has no safe value**, confirmed by direct measurement, not guessed: 64KB
+      fixed the Library/Player hang (biggest-free went from ~1-3KB to ~18-21KB in the same
+      scenario) but broke Tuya Lights with "connection refused" -- this static pool and the
+      general heap draw from the same physical SRAM (no PSRAM on this board), so the extra 16KB
+      came directly off the heap's own largest-contiguous-block ceiling (~43KB -> ~27-33KB),
+      undercutting the ~32KB a TLS handshake needs. A 56KB middle-ground value was tried and still
+      failed intermittently -- not because the number was wrong, but because **the actual failure
+      mode is heap fragmentation, not a fixed threshold**: two Lights refreshes back to back, with
+      identical `heap_caps_get_largest_free_block()` readings at the start of each (34804 bytes,
+      confirmed via `heap_caps_get_info()`'s `free_blocks`/`total_free_bytes`), one succeeded and
+      the next failed with "connection refused" after Library navigation had run in between --
+      the biggest-single-block number alone doesn't capture how fragmented the surrounding memory
+      is. **If a memory number ever needs tuning again on this project, tune footprint, not this
+      constant** -- reverted to the original 48KB.
+    - **Two Tuya-side fixes landed first, before the real fix, and are worth keeping regardless**:
+      (1) `tuyaRequest()`'s `WiFiClientSecure`/`HTTPClient` became `static` (kept alive across
+      calls) instead of a fresh TLS handshake every call, same pattern `VolumioLibrary.cpp`'s
+      `fetchTask()` already used for Volumio's own API. (2) `fetchDeviceList()` was doing 1 (list)
+      + one-per-device (status) calls -- up to 6 HTTPS round trips per refresh, each leaving the
+      heap a bit more fragmented than the last (measured: a 3-device refresh went from ~35KB
+      biggest-free-block to under 2KB by its 4th call, *before Library was ever touched*).
+      Switched to Tuya's own batch endpoint
+      (`GET /v1.0/iot-03/devices/status?device_ids=id1,id2,...`, confirmed against
+      [Tuya's docs](https://developer.tuya.com/en/docs/cloud/2faa3c9f3d), up to 20 IDs, same
+      `status` code/value array shape as the per-device call) -- cuts every refresh to at most 2
+      calls. Neither fix alone was sufficient (still fragmentation-sensitive under combined load),
+      but both reduce how much churn there is to fragment things in the first place.
+    - **The real fix: every screen is now lazy-built and freed on hide, not built once at
+      `setup()` and kept forever.** `UiHandler.cpp`'s `addScreen()`/`addHiddenScreen()` gained
+      `on_build`/`on_hide` alongside the existing `on_show` (signature in the file map above).
+      `showScreen()` now tracks the currently-shown screen, fires its `on_hide` (expected to
+      `lv_obj_clean()` its container and null out its own `lv_obj_t*` pointers) when switching
+      away, and fires the target's `on_build` the first time it's shown after being torn down
+      (including the very first time ever) before its `on_show`. Each module split its old
+      `setupX()` into `setupX()` (just stores the container reference, no widgets, no network
+      call), `buildX()` (the widget-creation code that used to run at boot), `refreshX()`/`showX()`
+      (unchanged where it already existed as `on_show`; new for Library, which now re-fetches the
+      *remembered* folder/page on a revisit instead of resetting to the root -- confirmed with the
+      user that this, not resetting to a default, is the wanted behavior), and `hideX()` (new --
+      `lv_obj_clean()` + null the widget pointers; **Queue's `hideQueue()` also frees the 19.2KB
+      `titles[]` buffer**, the second-largest fixed cost in the project after Lights' brightness
+      page, back to the general heap -- unless a fetch/op is still writing into it in the
+      background, in which case it's deliberately left allocated rather than raced, and freed on
+      the next hide that happens while idle instead). The brightness/colour sub-page (item 26's
+      earlier "build once on first long-press, keep forever" interim fix) now goes through the
+      same `on_build`/`on_hide` machinery instead of its own one-off `brightness_built` guard.
+      Player and the full-screen menu overlay were deliberately left out of this -- the player is
+      the app's default/home view and visited constantly, and the menu is opened/closed far more
+      often than any content screen, so tearing either down on every hide would trade this
+      problem for a worse one (constant rebuild churn); their combined 6180 bytes is cheap to keep
+      relative to how often they're touched, unlike Library/Queue/Lights.
+    - **Correctness risk found and fixed while building this**: a background fetch
+      (`fetchTask`/`queueTask`/Tuya's task) can still be in flight when the user navigates away
+      and the screen's widgets get torn down mid-flight. Each `loopX()` now checks its screen's
+      own container/widget pointer is still non-NULL before touching it on a finished fetch;
+      if it's NULL (torn down while in flight), the result is discarded (`fetching`/`busy` still
+      reset to `false`) instead of touching freed/NULL `lv_obj_t*`s -- the next time the screen is
+      shown, its `on_show` starts a fresh fetch anyway, so nothing is lost. `TuyaLights.cpp` has
+      two separate guards for this (`cont_lights` for the main list, `label_bright_status` for the
+      brightness page), since either one can be the screen that was mid-fetch when the user
+      backed out via the menu instead of the page's own Back button.
+    - **Measured result**: the same boot-time checkpoint that showed 54-88% pool usage before any
+      navigation now shows nothing built until a screen is actually opened -- confirmed on
+      hardware that the item 26/this item's freeze no longer reproduces even repeating the
+      original trigger (several folders deep in Library, then switch to Lights) multiple times in
+      a row, and Tuya Lights stayed reliable throughout the same test with `LV_MEM_SIZE` back at
+      its original 48KB.
 
 - **LVGL's compiled-in fonts are ASCII-only** — the stock Montserrat fonts (`lv_conf.h`, shared,
   outside this repo) only cover code points 32-126 plus LVGL's own icon symbols (checked directly

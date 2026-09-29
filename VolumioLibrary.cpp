@@ -415,11 +415,16 @@ static void next_page_cb(lv_event_t*) {
 
 void setupLibrary(lv_obj_t* parent_tab) {
     tab_library = parent_tab;
+}
 
-    lv_obj_remove_flag(tab_library, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(tab_library, 0, 0);
+// on_build: constructs the widget tree. Was setupLibrary()'s whole body before the screen became
+// lazy-built -- see CLAUDE.md item 29 for why (this screen's widgets used to sit permanently in
+// LVGL's tight static pool whether or not Library was ever opened).
+void buildLibrary(lv_obj_t* parent) {
+    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(parent, 0, 0);
 
-    list_library = lv_list_create(tab_library);
+    list_library = lv_list_create(parent);
     lv_obj_set_size(list_library, LV_PCT(100), LIB_ROW_H * LIB_PAGE_SIZE);
     lv_obj_align(list_library, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_remove_flag(list_library, LV_OBJ_FLAG_SCROLLABLE);
@@ -432,7 +437,7 @@ void setupLibrary(lv_obj_t* parent_tab) {
     // smart quotes the stock font doesn't have a glyph for -- see CustomFonts.h.
     lv_obj_set_style_text_font(list_library, &lv_font_montserrat_ext_14, 0);
 
-    lv_obj_t* bar = lv_obj_create(tab_library);
+    lv_obj_t* bar = lv_obj_create(parent);
     lv_obj_set_size(bar, LV_PCT(100), LIB_ROW_H);
     lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
@@ -450,9 +455,29 @@ void setupLibrary(lv_obj_t* parent_tab) {
     updateNav(false);
 }
 
-void openLibraryRoot() {
-    path_depth = 0;
-    enterFolder(LIB_ROOT_URI);
+// on_show: the very first time ever (path_depth is still 0, nothing entered yet), loads the
+// root, same as the old openLibraryRoot() did. Every later visit re-fetches the remembered
+// folder/page instead -- items[] and the list widgets were both wiped on hide, so this is what
+// repopulates the freshly-rebuilt (empty) list with the same view the user left.
+void refreshLibrary() {
+    if (path_depth == 0) {
+        enterFolder(LIB_ROOT_URI);
+    } else {
+        pending_page = page;
+        setStatus(LV_SYMBOL_REFRESH " Loading...");
+        startFetch(path_stack[path_depth - 1], pending_page);
+    }
+}
+
+// on_hide: frees this screen's widgets back to LVGL's pool. path_stack/path_depth/page/items[]
+// are deliberately left alone -- refreshLibrary() uses them to rebuild the same view next time.
+void hideLibrary() {
+    lv_obj_clean(tab_library);
+    list_library = NULL;
+    btn_up = NULL;
+    btn_prev_page = NULL;
+    btn_next_page = NULL;
+    label_page = NULL;
 }
 
 static void showError(const char* error) {
@@ -470,6 +495,14 @@ static void showError(const char* error) {
 void loopLibrary() {
     if (!fetch_done) return;
     fetch_done = false;
+
+    if (!list_library) {
+        // The screen was hidden (its widgets torn down) while this fetch was still in flight --
+        // discard the result instead of touching freed/NULL pointers. refreshLibrary() starts a
+        // fresh fetch the next time this screen is shown, so nothing is lost.
+        fetching = false;
+        return;
+    }
 
     if (fetch_error[0]) {
         showError(fetch_error);

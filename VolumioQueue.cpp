@@ -213,12 +213,21 @@ static void next_page_cb(lv_event_t*) { if (!busy && page < pageCount() - 1) { p
 
 void setupQueue(lv_obj_t* parent_tab) {
     tab_queue = parent_tab;
-    titles = new char[QUEUE_MAX_ITEMS][QUEUE_TITLE_LEN];
+}
 
-    lv_obj_remove_flag(tab_queue, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(tab_queue, 0, 0);
+// on_build: constructs the widget tree (and titles[], if a previous hideQueue() freed it). Was
+// setupQueue()'s whole body before the screen became lazy-built -- see CLAUDE.md item 29: titles[]
+// alone is 200*96 = 19.2KB permanently reserved on the general heap, the second-largest fixed
+// cost in the project after Lights' old brightness page, and it directly competed with Tuya's
+// TLS handshake for the same limited RAM (no PSRAM on this board) whether or not Queue was ever
+// opened.
+void buildQueue(lv_obj_t* parent) {
+    if (!titles) titles = new char[QUEUE_MAX_ITEMS][QUEUE_TITLE_LEN];
 
-    list_queue = lv_list_create(tab_queue);
+    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(parent, 0, 0);
+
+    list_queue = lv_list_create(parent);
     lv_obj_set_size(list_queue, LV_PCT(100), QUEUE_ROW_H * QUEUE_PAGE_SIZE);
     lv_obj_align(list_queue, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_remove_flag(list_queue, LV_OBJ_FLAG_SCROLLABLE);
@@ -231,7 +240,7 @@ void setupQueue(lv_obj_t* parent_tab) {
     // quotes the stock font doesn't have a glyph for -- see CustomFonts.h.
     lv_obj_set_style_text_font(list_queue, &lv_font_montserrat_ext_14, 0);
 
-    lv_obj_t* bar = lv_obj_create(tab_queue);
+    lv_obj_t* bar = lv_obj_create(parent);
     lv_obj_set_size(bar, LV_PCT(100), QUEUE_ROW_H);
     lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
@@ -255,9 +264,33 @@ void refreshQueue() {
     startOp(OP_REFRESH);
 }
 
+// on_hide: frees this screen's widgets back to LVGL's pool, and titles[] back to the general
+// heap -- unless an op is still writing into titles[] on its own task right now, in which case
+// it's left allocated rather than raced; the next hide that happens while idle frees it instead.
+void hideQueue() {
+    lv_obj_clean(tab_queue);
+    list_queue = NULL;
+    btn_clear = NULL;
+    btn_prev_page = NULL;
+    btn_next_page = NULL;
+    label_page = NULL;
+    if (!busy) {
+        delete[] titles;
+        titles = NULL;
+    }
+}
+
 void loopQueue() {
     if (!op_done) return;
     op_done = false;
+    busy = false;
+
+    if (!list_queue) {
+        // Screen was hidden (its widgets torn down) while this op was in flight -- discard the
+        // result instead of touching freed/NULL pointers. refreshQueue() starts a fresh one the
+        // next time this screen is shown, so nothing is lost.
+        return;
+    }
 
     if (op_error[0]) {
         showError(op_error);
@@ -266,5 +299,4 @@ void loopQueue() {
         if (page >= pageCount()) page = pageCount() - 1;
         showList();
     }
-    busy = false;
 }

@@ -13,10 +13,16 @@ void setup() {
     setupLVGL();
     setupTouch();
     setupUI();
-    setupLibrary(addScreen("Library"));
-    setupQueue(addScreen("Queue", refreshQueue));
-    setupArtists(addScreen("Artists"));
-    setupTuyaLights(addScreen("Lights", refreshTuyaLights), addHiddenScreen());
+    // Every screen's widgets are built lazily (on_build) the first time it's actually shown, and
+    // freed again (on_hide) when navigating away -- see CLAUDE.md item 29. Data loading
+    // (on_show) follows the same lazy timing, so there's no need to pre-fetch Library/Queue here
+    // at boot the way this used to (openLibraryRoot()/refreshQueue() were called explicitly
+    // below; the first showScreen() to each now triggers them instead).
+    setupLibrary(addScreen("Library", buildLibrary, refreshLibrary, hideLibrary));
+    setupQueue(addScreen("Queue", buildQueue, refreshQueue, hideQueue));
+    addScreen("Artists", buildArtists, NULL, hideArtists);
+    setupTuyaLights(addScreen("Lights", buildLights, refreshTuyaLights, hideLights),
+                     addHiddenScreen(buildBrightnessPage, refreshBrightnessPage, hideBrightnessPage));
     // Must come after every addScreen() above -- it appends Restart/Shut down as the grid's last
     // two tiles, so they land after all of these instead of wherever setupUI() itself ran.
     addSystemMenuActions();
@@ -24,10 +30,10 @@ void setup() {
     while (WiFi.status() != WL_CONNECTED) delay(100);
     configTzTime(SECRET_TIMEZONE, "pool.ntp.org");
     setupVolumio();
-    openLibraryRoot();
-    refreshQueue();
     // Placed last so NTP (configTzTime above) has had a moment to sync in the background --
-    // Tuya's request signing needs a roughly-correct clock.
+    // Tuya's request signing needs a roughly-correct clock. Still done eagerly at boot (unlike
+    // the screens above) since it's just a small transient token refresh, not a widget tree or a
+    // large permanent buffer -- see CLAUDE.md item 29.
     startTuyaAuth();
 }
 void loop() {

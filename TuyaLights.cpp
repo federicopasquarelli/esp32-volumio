@@ -138,10 +138,23 @@ static bool tuyaRequest(const char* method, const char* pathAndQuery, const char
     char sign[65], t[16];
     buildSign(method, pathAndQuery, body, accessTokenForSign, sign, t);
 
-    WiFiClientSecure client;
-    // Tuya's cert isn't pinned -- acceptable for this personal/home use.
-    client.setInsecure();
-    HTTPClient http;
+    // Kept alive across calls (static, not a local) instead of a fresh WiFiClientSecure+TLS
+    // handshake every single call -- fetchDeviceList() alone makes 1 (list) + one-per-device
+    // (status) calls back to back, and each of those handshakes was leaving the heap a bit more
+    // fragmented than the last (measured: a 3-device refresh went from ~35KB biggest-free-block
+    // down to under 2KB by its 4th call, well before any Library activity was involved -- see the
+    // CYD Volumio Smart Clock project's CLAUDE.md item 29). Reusing the same connection to the
+    // same host, the same way VolumioLibrary.cpp's fetchTask() already does for Volumio's API,
+    // means at most one handshake per refresh instead of one per call.
+    static WiFiClientSecure client;
+    static bool client_configured = false;
+    if (!client_configured) {
+        // Tuya's cert isn't pinned -- acceptable for this personal/home use.
+        client.setInsecure();
+        client_configured = true;
+    }
+    static HTTPClient http;  // static like `client` above -- matches VolumioLibrary.cpp's pattern
+    http.setReuse(true);
     http.setTimeout(10000);
     String url = String("https://") + TUYA_HOST + pathAndQuery;
     if (!http.begin(client, url)) {
@@ -409,13 +422,10 @@ static void requestBrightness(int idx, int pct) {
     startBrightness(idx, pct);
 }
 
+// brightness_dev must be set before showScreen() -- refreshBrightnessPage() (its on_show) reads
+// it to know which device to populate the page with.
 static void openBrightness(int idx) {
     brightness_dev = idx;
-    lv_label_set_text(label_bright_name, devices[idx].name);
-    lv_slider_set_value(slider_bright, devices[idx].bright_pct, LV_ANIM_OFF);
-    lv_label_set_text_fmt(label_bright_pct, "%d%%", devices[idx].bright_pct);
-    lv_label_set_text(label_bright_status, "");
-    updateSwatchSelection(idx);
     showScreen(brightness_screen);
 }
 
@@ -487,8 +497,19 @@ static void showList() {
     }
 }
 
-// Populates devices[0..device_count) with id/name, then looks up each one's current switch
-// state -- the list endpoint only has static metadata, not live status.
+// Populates devices[0..device_count) with id/name, then looks up every device's current switch
+// state in a single batch call -- the list endpoint only has static metadata, not live status.
+// Used to be one HTTPS call per device (`/v1.0/iot-03/devices/{id}/status`, up to TUYA_MAX_DEVICES
+// of them) instead of the batch endpoint below, which meant up to that many separate TLS
+// handshakes back to back on every refresh; each one left the heap a little more fragmented than
+// the last (measured: a 3-device refresh went from ~35KB biggest-free-block down to under 2KB by
+// its 4th call -- see the CYD Volumio Smart Clock project's CLAUDE.md item 29). tuyaRequest()'s
+// connection reuse alone wasn't enough to fix that (reusing a socket across handshakes still
+// means N handshakes' worth of TLS session churn); cutting the actual call count from 1+N down to
+// 2 is what removes it. Confirmed against Tuya's own docs
+// (https://developer.tuya.com/en/docs/cloud/2faa3c9f3d): `/v1.0/iot-03/devices/status` takes a
+// comma-separated `device_ids` (up to 20 -- comfortably more than TUYA_MAX_DEVICES) and returns
+// each device's `id` plus the same `status` code/value array the old per-device endpoint did.
 static bool fetchDeviceList(char* errOut, size_t errLen) {
     device_count = 0;
 
@@ -499,6 +520,7 @@ static bool fetchDeviceList(char* errOut, size_t errLen) {
     // being the array directly (confirmed live), or "result.list" wrapping it.
     JsonArray arr = doc["result"]["list"].is<JsonArray>() ? doc["result"]["list"].as<JsonArray>()
                                                             : doc["result"].as<JsonArray>();
+    String ids;
     for (JsonObject d : arr) {
         if (device_count >= TUYA_MAX_DEVICES) break;
         TuyaDevice& dst = devices[device_count++];
@@ -510,16 +532,30 @@ static bool fetchDeviceList(char* errOut, size_t errLen) {
         dst.hue = 0;
         dst.sat = 1000;
         dst.bright_pct = 100;
+        if (ids.length()) ids += ",";
+        ids += dst.id;
     }
+    if (device_count == 0) return true;
 
-    for (int i = 0; i < device_count; i++) {
-        char path[64];
-        snprintf(path, sizeof(path), "/v1.0/iot-03/devices/%s/status", devices[i].id);
-        JsonDocument statusDoc;
-        char statusErr[48];
-        if (!tuyaCall("GET", path, "", statusDoc, statusErr, sizeof(statusErr))) continue;
+    char path[256];
+    snprintf(path, sizeof(path), "/v1.0/iot-03/devices/status?device_ids=%s", ids.c_str());
+    JsonDocument statusDoc;
+    char statusErr[48];
+    // The device list itself is still good even if this one fails -- every device is already
+    // initialized to a sane default (off, white, 100%) above, so just leave it at that rather
+    // than failing the whole refresh over a status lookup.
+    if (!tuyaCall("GET", path, "", statusDoc, statusErr, sizeof(statusErr))) return true;
+
+    for (JsonObject entry : statusDoc["result"].as<JsonArray>()) {
+        const char* id = entry["id"] | "";
+        int i = -1;
+        for (int j = 0; j < device_count; j++) {
+            if (strcmp(devices[j].id, id) == 0) { i = j; break; }
+        }
+        if (i < 0) continue;
+
         int white_raw = 1000, colour_v = 1000;
-        for (JsonObject s : statusDoc["result"].as<JsonArray>()) {
+        for (JsonObject s : entry["status"].as<JsonArray>()) {
             const char* code = s["code"] | "";
             if (strcmp(code, TUYA_SWITCH_CODE) == 0) {
                 devices[i].on = s["value"] | false;
@@ -673,6 +709,11 @@ static void startTask() {
 void setupTuyaLights(lv_obj_t* parent, lv_obj_t* brightnessParent) {
     lights_screen = parent;
     brightness_screen = brightnessParent;
+}
+
+// on_build: constructs cont_lights (the device button grid). Was setupTuyaLights()'s widget-
+// creation code before the screen became lazy-built -- see CLAUDE.md item 29.
+void buildLights(lv_obj_t* parent) {
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(parent, 0, 0);
 
@@ -691,10 +732,24 @@ void setupTuyaLights(lv_obj_t* parent, lv_obj_t* brightnessParent) {
     lv_obj_remove_flag(cont_lights, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(cont_lights, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(cont_lights, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+}
 
-    // Brightness page: Back, the light's name and a big readout on one row, a thin slider (its
-    // knob is padded out so it's still easy to grab on the resistive panel), and the palette.
-    lv_obj_t* btn_back = lv_button_create(brightness_screen);
+// on_hide: frees cont_lights back to LVGL's pool. devices[]/device_count are kept (tiny, not
+// LVGL objects) so refreshTuyaLights() can redraw without a refetch (e.g. returning from the
+// brightness page).
+void hideLights() {
+    lv_obj_clean(lights_screen);
+    cont_lights = NULL;
+}
+
+// Brightness page: Back, the light's name and a big readout on one row, a thin slider (its
+// knob is padded out so it's still easy to grab on the resistive panel), and the palette.
+// Lazy-built/freed like every other screen (see CLAUDE.md item 29) -- the slider plus 12 round
+// swatch buttons turned out to be the single biggest permanent consumer of LVGL's static memory
+// pool of any screen in this project when built (~7KB), for a page most people open rarely
+// (long-press only).
+void buildBrightnessPage(lv_obj_t* parent) {
+    lv_obj_t* btn_back = lv_button_create(parent);
     lv_obj_set_size(btn_back, 56, 36);
     lv_obj_set_pos(btn_back, 8, 8);
     lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x000000), 0);
@@ -708,19 +763,19 @@ void setupTuyaLights(lv_obj_t* parent, lv_obj_t* brightnessParent) {
     lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
     lv_obj_center(back_icon);
 
-    label_bright_name = lv_label_create(brightness_screen);
+    label_bright_name = lv_label_create(parent);
     lv_label_set_long_mode(label_bright_name, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_width(label_bright_name, 148);
     lv_obj_set_pos(label_bright_name, 72, 14);
     lv_obj_set_style_text_font(label_bright_name, &lv_font_montserrat_ext_18, 0);
     lv_obj_set_style_text_color(label_bright_name, lv_color_hex(0xFFFFFF), 0);
 
-    label_bright_pct = lv_label_create(brightness_screen);
+    label_bright_pct = lv_label_create(parent);
     lv_obj_set_style_text_font(label_bright_pct, &lv_font_montserrat_ext_32, 0);
     lv_obj_set_style_text_color(label_bright_pct, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(label_bright_pct, LV_ALIGN_TOP_RIGHT, -10, 6);
 
-    slider_bright = lv_slider_create(brightness_screen);
+    slider_bright = lv_slider_create(parent);
     lv_obj_set_size(slider_bright, 272, 8);
     lv_obj_align(slider_bright, LV_ALIGN_TOP_MID, 0, 62);
     lv_slider_set_range(slider_bright, 1, 100);
@@ -733,7 +788,7 @@ void setupTuyaLights(lv_obj_t* parent, lv_obj_t* brightnessParent) {
 
     // Two rows of six 36px round swatches, 12px apart, centered.
     for (int i = 0; i < PALETTE_COUNT; i++) {
-        lv_obj_t* sw = lv_button_create(brightness_screen);
+        lv_obj_t* sw = lv_button_create(parent);
         lv_obj_set_size(sw, 36, 36);
         lv_obj_set_pos(sw, 22 + (i % 6) * 48, 90 + (i / 6) * 44);
         lv_obj_set_style_radius(sw, LV_RADIUS_CIRCLE, 0);
@@ -747,7 +802,7 @@ void setupTuyaLights(lv_obj_t* parent, lv_obj_t* brightnessParent) {
         swatches[i] = sw;
     }
 
-    label_bright_status = lv_label_create(brightness_screen);
+    label_bright_status = lv_label_create(parent);
     lv_label_set_long_mode(label_bright_status, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_width(label_bright_status, 300);
     lv_obj_set_style_text_align(label_bright_status, LV_TEXT_ALIGN_CENTER, 0);
@@ -755,6 +810,27 @@ void setupTuyaLights(lv_obj_t* parent, lv_obj_t* brightnessParent) {
     lv_obj_set_style_text_color(label_bright_status, lv_color_hex(0xAAAAAA), 0);
     lv_obj_align(label_bright_status, LV_ALIGN_BOTTOM_MID, 0, -12);
     lv_label_set_text(label_bright_status, "");
+}
+
+// on_show: populates the page for whichever device openBrightness() set as current just before
+// calling showScreen().
+void refreshBrightnessPage() {
+    if (brightness_dev < 0 || brightness_dev >= device_count) return;
+    lv_label_set_text(label_bright_name, devices[brightness_dev].name);
+    lv_slider_set_value(slider_bright, devices[brightness_dev].bright_pct, LV_ANIM_OFF);
+    lv_label_set_text_fmt(label_bright_pct, "%d%%", devices[brightness_dev].bright_pct);
+    lv_label_set_text(label_bright_status, "");
+    updateSwatchSelection(brightness_dev);
+}
+
+// on_hide: frees this page's widgets back to LVGL's pool.
+void hideBrightnessPage() {
+    lv_obj_clean(brightness_screen);
+    label_bright_name = NULL;
+    label_bright_pct = NULL;
+    slider_bright = NULL;
+    label_bright_status = NULL;
+    for (int i = 0; i < PALETTE_COUNT; i++) swatches[i] = NULL;
 }
 
 void startTuyaAuth() {
@@ -797,22 +873,35 @@ void loopTuyaLights() {
         // Reported on the brightness page, not the list. On failure the slider and palette snap
         // back to what the light is actually at. The list only needs a redraw if it's what's on
         // screen (the command may also have switched the light on).
-        if (fetch_error[0]) {
-            char msg[110];
-            snprintf(msg, sizeof(msg), LV_SYMBOL_WARNING " %s", fetch_error);
-            lv_label_set_text(label_bright_status, msg);
-            if (brightness_dev >= 0 && brightness_dev < device_count) {
-                lv_slider_set_value(slider_bright, devices[brightness_dev].bright_pct, LV_ANIM_OFF);
-                lv_label_set_text_fmt(label_bright_pct, "%d%%", devices[brightness_dev].bright_pct);
-                updateSwatchSelection(brightness_dev);
+        //
+        // label_bright_status guards against the brightness page having been torn down (its
+        // on_hide fired -- e.g. the user backed all the way out via the menu instead of the Back
+        // button) while this command was still in flight; discarding here is safe, since
+        // devices[] (the data) is already updated by send{Brightness,Colour}() regardless, and
+        // reopening the page later reads that.
+        if (label_bright_status) {
+            if (fetch_error[0]) {
+                char msg[110];
+                snprintf(msg, sizeof(msg), LV_SYMBOL_WARNING " %s", fetch_error);
+                lv_label_set_text(label_bright_status, msg);
+                if (brightness_dev >= 0 && brightness_dev < device_count) {
+                    lv_slider_set_value(slider_bright, devices[brightness_dev].bright_pct, LV_ANIM_OFF);
+                    lv_label_set_text_fmt(label_bright_pct, "%d%%", devices[brightness_dev].bright_pct);
+                    updateSwatchSelection(brightness_dev);
+                }
+            } else {
+                lv_label_set_text(label_bright_status, "");
             }
-        } else {
-            lv_label_set_text(label_bright_status, "");
         }
-        if (!lv_obj_has_flag(lights_screen, LV_OBJ_FLAG_HIDDEN)) showList();
+        if (cont_lights && !lv_obj_has_flag(lights_screen, LV_OBJ_FLAG_HIDDEN)) showList();
     } else if (current_op != OP_AUTH) {
-        if (fetch_error[0]) showError(fetch_error);
-        else showList();
+        // cont_lights guards against the Lights screen having been torn down (on_hide fired)
+        // while this list/toggle was still in flight -- discard instead of touching a freed/NULL
+        // container; refreshTuyaLights() starts fresh the next time the screen is shown.
+        if (cont_lights) {
+            if (fetch_error[0]) showError(fetch_error);
+            else showList();
+        }
     }
 
     if (pending_list_refresh) {

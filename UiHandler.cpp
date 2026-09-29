@@ -28,9 +28,19 @@ static unsigned long base_elapsed_at_ms = 0;
 static int cur_duration_sec = 0;
 static bool cur_is_playing = false;
 
-struct ScreenEntry { lv_obj_t* obj; void (*on_show)(void); };
+struct ScreenEntry {
+    lv_obj_t* obj;
+    void (*on_build)(lv_obj_t*);
+    void (*on_show)(void);
+    void (*on_hide)(void);
+    bool built;
+};
 static ScreenEntry screens[MAX_SCREENS];
 static int screen_count = 0;
+// The screen showScreen() last switched to (player or one of screens[]) -- used to find and fire
+// its on_hide when switching away from it. NULL until the first real showScreen() call (the
+// player is shown by default at boot without going through showScreen()).
+static lv_obj_t* current_screen_obj = NULL;
 
 // Active buttons are filled with the accent, inactive ones are empty, like the tab labels used to be.
 static void set_btn_active_style(lv_obj_t* btn) {
@@ -123,15 +133,41 @@ static void refreshPlaybackClock() {
 
 // Hides every registered screen and the player, then shows just the target and runs its
 // on_show callback, if it has one. Also closes the dropdown menu, in case it was left open.
+//
+// Lazy build / free-on-hide: if the screen being left has an on_hide, it runs now (it's expected
+// to lv_obj_clean() its container and null out its own lv_obj_t* pointers -- see addScreen()'s
+// comment), and its `built` flag clears so the next time it's shown, on_build runs again. If the
+// target has an on_build and isn't currently built, it runs now, before on_show. Screens that
+// pass on_build == NULL (the player, reached separately, and any screen that opts out) are
+// unaffected -- they're just always "built" from setup() as before.
 void showScreen(lv_obj_t* target) {
+    if (current_screen_obj && current_screen_obj != target) {
+        for (int i = 0; i < screen_count; i++) {
+            if (screens[i].obj == current_screen_obj) {
+                if (screens[i].on_hide) screens[i].on_hide();
+                screens[i].built = false;
+                break;
+            }
+        }
+    }
+    current_screen_obj = target;
+
     lv_obj_add_flag(cont_player, LV_OBJ_FLAG_HIDDEN);
     void (*on_show)(void) = NULL;
+    void (*on_build)(lv_obj_t*) = NULL;
     for (int i = 0; i < screen_count; i++) {
         lv_obj_add_flag(screens[i].obj, LV_OBJ_FLAG_HIDDEN);
-        if (screens[i].obj == target) on_show = screens[i].on_show;
+        if (screens[i].obj == target) {
+            on_show = screens[i].on_show;
+            if (screens[i].on_build && !screens[i].built) {
+                on_build = screens[i].on_build;
+                screens[i].built = true;
+            }
+        }
     }
     lv_obj_remove_flag(target, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(menu_list, LV_OBJ_FLAG_HIDDEN);
+    if (on_build) on_build(target);
     if (on_show) on_show();
 }
 
@@ -419,8 +455,10 @@ void updateTime() {
     }
 }
 
-static lv_obj_t* createScreen(void (*on_show)(void)) {
+static lv_obj_t* createScreen(void (*on_build)(lv_obj_t*), void (*on_show)(void), void (*on_hide)(void)) {
     // Plain content filling the space below the top bar, same geometry the player screen uses.
+    // Empty until on_build runs (the first time this screen is shown, see showScreen()) -- or
+    // forever, for a screen that passes on_build == NULL.
     lv_obj_t* screen = lv_obj_create(lv_screen_active());
     lv_obj_set_pos(screen, 0, TOP_BAR_H);
     lv_obj_set_size(screen, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_H);
@@ -430,19 +468,19 @@ static lv_obj_t* createScreen(void (*on_show)(void)) {
     lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
 
-    if (screen_count < MAX_SCREENS) screens[screen_count++] = { screen, on_show };
+    if (screen_count < MAX_SCREENS) screens[screen_count++] = { screen, on_build, on_show, on_hide, false };
     return screen;
 }
 
-lv_obj_t* addScreen(const char* name, void (*on_show)(void)) {
+lv_obj_t* addScreen(const char* name, void (*on_build)(lv_obj_t*), void (*on_show)(void), void (*on_hide)(void)) {
     // The dropdown (see addMenuEntry) is how every one of these is reached.
-    lv_obj_t* screen = createScreen(on_show);
+    lv_obj_t* screen = createScreen(on_build, on_show, on_hide);
     addMenuEntry(name, screen);
     return screen;
 }
 
-lv_obj_t* addHiddenScreen(void (*on_show)(void)) {
-    return createScreen(on_show);
+lv_obj_t* addHiddenScreen(void (*on_build)(lv_obj_t*), void (*on_show)(void), void (*on_hide)(void)) {
+    return createScreen(on_build, on_show, on_hide);
 }
 
 void updateVolumioUI(const char* title, const char* artist, const char* album, bool airplay, bool isPlaying, bool shuffle, bool repeat, bool repeatSingle, int elapsedSec, int durationSec) {
