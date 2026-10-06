@@ -582,6 +582,8 @@ void updateVolumioUI(const char* title, const char* artist, const char* album, b
         lv_obj_set_size(slider_volume, 246, 6);
         lv_obj_set_pos(slider_volume, 30, 177);
         lv_slider_set_range(slider_volume, 0, 100);
+        lv_obj_set_style_bg_color(slider_volume, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(slider_volume, lv_color_hex(COLOR_ACCENT), LV_PART_KNOB);
         lv_obj_add_event_cb(slider_volume, volume_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
         label_volume = lv_label_create(t1);
