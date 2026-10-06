@@ -23,7 +23,7 @@
 #define SCREEN_HEIGHT 240
 
 // Backlight turns off after this long without a touch
-#define SCREEN_TIMEOUT_MS (3UL * 60UL * 1000UL)
+#define SCREEN_TIMEOUT_MS (30UL * 1000UL)
 
 // Accent for the selected tab and active buttons
 #define COLOR_ACCENT 0x1DB954

@@ -8,7 +8,6 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
-#define QUEUE_MAX_ITEMS 200
 #define QUEUE_PAGE_SIZE 4
 #define QUEUE_ROW_H     34
 #define QUEUE_TITLE_LEN 96
@@ -20,11 +19,15 @@ static lv_obj_t* btn_prev_page = NULL;
 static lv_obj_t* btn_next_page = NULL;
 static lv_obj_t* label_page = NULL;
 
-static char (*titles)[QUEUE_TITLE_LEN] = NULL;
-static int item_count = 0;
+// Only the current page is kept: getQueue has no server-side paging and a long queue is far
+// bigger than the heap, so it's streamed and every item outside the page is skipped.
+static char titles[QUEUE_PAGE_SIZE][QUEUE_TITLE_LEN];
+static int page_items = 0;
+static int total_count = 0;
 static int page = 0;
+static int fetch_page = 0;
 
-enum QueueOp { OP_REFRESH, OP_PLAY, OP_CLEAR };
+enum QueueOp { OP_REFRESH, OP_PLAY, OP_CLEAR, OP_REFRESH_AFTER_REMOVE };
 
 // Written by the network task, read by loopQueue(). Only one operation runs at a time.
 static volatile bool busy = false;
@@ -45,41 +48,95 @@ static bool httpGet(const char* path) {
     return code == HTTP_CODE_OK;
 }
 
-static bool fetchQueue() {
+static int nextNonSpace(Stream& s) {
+    char c;
+    while (s.readBytes(&c, 1) == 1) {
+        if (c != ' ' && c != '\n' && c != '\r' && c != '\t') return c;
+    }
+    return -1;
+}
+
+static int peekNonSpace(Stream& s) {
+    unsigned long start = millis();
+    while (millis() - start < 2000) {
+        if (!s.available()) { delay(1); continue; }
+        int c = s.peek();
+        if (c != ' ' && c != '\n' && c != '\r' && c != '\t') return c;
+        s.read();
+    }
+    return -1;
+}
+
+static bool streamQueuePage(int wanted_page, int& total) {
     WiFiClient client;
     HTTPClient http;
     http.begin(client, apiUrl("getQueue"));
     http.setTimeout(8000);
 
-    int code = http.GET();
-    if (code != HTTP_CODE_OK) {
+    if (http.GET() != HTTP_CODE_OK) {
         strlcpy(op_error, "Request failed", sizeof(op_error));
         http.end();
         return false;
     }
 
-    JsonDocument filter;
-    filter["queue"][0]["name"] = true;
-    filter["queue"][0]["title"] = true;
-    filter["queue"][0]["artist"] = true;
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-    http.end();
-    if (err) {
+    Stream& stream = http.getStream();
+    stream.setTimeout(8000);
+    if (!stream.find("\"queue\"") || !stream.find("[")) {
         strlcpy(op_error, "Invalid response", sizeof(op_error));
+        http.end();
         return false;
     }
 
-    item_count = 0;
-    for (JsonObject it : doc["queue"].as<JsonArray>()) {
-        if (item_count >= QUEUE_MAX_ITEMS) break;
-        const char* name = it["name"] | (it["title"] | "");
-        const char* artist = it["artist"] | "";
-        if (artist[0]) snprintf(titles[item_count], QUEUE_TITLE_LEN, "%s - %s", artist, name);
-        else strlcpy(titles[item_count], name, QUEUE_TITLE_LEN);
-        item_count++;
+    JsonDocument filter;
+    filter["name"] = true;
+    filter["title"] = true;
+    filter["artist"] = true;
+
+    int first = wanted_page * QUEUE_PAGE_SIZE;
+    int idx = 0;
+    page_items = 0;
+    bool ok = true;
+
+    stream.setTimeout(2000);
+    while (true) {
+        if (peekNonSpace(stream) == ']') break;
+
+        JsonDocument doc;
+        if (deserializeJson(doc, stream, DeserializationOption::Filter(filter))) { ok = false; break; }
+
+        if (idx >= first && idx < first + QUEUE_PAGE_SIZE) {
+            const char* name = doc["name"] | (doc["title"] | "");
+            const char* artist = doc["artist"] | "";
+            char* dst = titles[page_items++];
+            if (artist[0]) snprintf(dst, QUEUE_TITLE_LEN, "%s - %s", artist, name);
+            else strlcpy(dst, name, QUEUE_TITLE_LEN);
+        }
+        idx++;
+
+        int sep = nextNonSpace(stream);
+        if (sep == ']') break;
+        if (sep != ',') { ok = false; break; }
     }
+    http.end();
+
+    if (!ok) {
+        strlcpy(op_error, "Invalid response", sizeof(op_error));
+        return false;
+    }
+    total = idx;
+    return true;
+}
+
+// Fetches fetch_page; if the queue shrank below it, falls back to the new last page.
+static bool fetchQueue() {
+    int total = 0;
+    if (!streamQueuePage(fetch_page, total)) return false;
+    int last_page = total > 0 ? (total - 1) / QUEUE_PAGE_SIZE : 0;
+    if (fetch_page > last_page) {
+        fetch_page = last_page;
+        if (!streamQueuePage(fetch_page, total)) return false;
+    }
+    total_count = total;
     return true;
 }
 
@@ -91,6 +148,11 @@ static void queueTask(void* pv) {
 
     switch (op) {
         case OP_REFRESH:
+            fetchQueue();
+            break;
+        case OP_REFRESH_AFTER_REMOVE:
+            // The remove went out over the WebSocket; give Volumio a moment to apply it.
+            vTaskDelay(pdMS_TO_TICKS(400));
             fetchQueue();
             break;
         case OP_PLAY: {
@@ -109,26 +171,30 @@ static void queueTask(void* pv) {
     vTaskDelete(NULL);
 }
 
+static void showError(const char* error);
+
 static void startOp(QueueOp op, int index = 0) {
     if (busy) return;
     busy = true;
-    xTaskCreatePinnedToCore(queueTask, "QueueOp", 8192, (void*)(intptr_t)((index << 4) | op), 1, NULL, 1);
+    op_done = false;
+    if (xTaskCreatePinnedToCore(queueTask, "QueueOp", 8192, (void*)(intptr_t)((index << 4) | op), 1, NULL, 1) != pdPASS) {
+        busy = false;
+        if (list_queue) showError("Out of memory");
+    }
 }
 
 static int pageCount() {
-    int pages = (item_count + QUEUE_PAGE_SIZE - 1) / QUEUE_PAGE_SIZE;
+    int pages = (total_count + QUEUE_PAGE_SIZE - 1) / QUEUE_PAGE_SIZE;
     return pages > 0 ? pages : 1;
 }
 
-// listing is false while loading or showing an error, when paging makes no sense. Queue always
-// knows its real total (the whole queue is fetched up front), so formatPageLabel() always shows
-// "current/total (item count)" while listing, never the unknown-total fallback.
+// listing is false while loading or showing an error, when paging makes no sense.
 static void updateNav(bool listing) {
     int pages = pageCount();
     char txt[24];
-    formatPageLabel(txt, sizeof(txt), listing, page, QUEUE_PAGE_SIZE, item_count);
+    formatPageLabel(txt, sizeof(txt), listing, page, QUEUE_PAGE_SIZE, total_count);
     lv_label_set_text(label_page, txt);
-    setPagerEnabled(btn_clear, listing && item_count > 0);
+    setPagerEnabled(btn_clear, listing && total_count > 0);
     setPagerEnabled(btn_prev_page, listing && page > 0);
     setPagerEnabled(btn_next_page, listing && page < pages - 1);
 }
@@ -151,23 +217,26 @@ static void styleButton(lv_obj_t* btn) {
 
 static void item_cb(lv_event_t* e) {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (!busy && idx >= 0 && idx < item_count) startOp(OP_PLAY, idx);
+    if (!busy && idx >= 0 && idx < total_count) startOp(OP_PLAY, idx);
 }
 
 static void showList();
 
 static void remove_cb(lv_event_t* e) {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (busy || idx < 0 || idx >= item_count) return;
+    int slot = idx - page * QUEUE_PAGE_SIZE;
+    if (busy || slot < 0 || slot >= page_items) return;
 
     // Volumio has no REST route for this, so it goes over the WebSocket.
     removeFromQueue(idx);
 
-    // Update the list locally so the following rows shift up without a reload.
-    memmove(titles[idx], titles[idx + 1], (size_t)(item_count - idx - 1) * QUEUE_TITLE_LEN);
-    item_count--;
-    if (page >= pageCount()) page = pageCount() - 1;
+    // Drop the row locally right away, then reload the page to pull the next item up into it.
+    memmove(titles[slot], titles[slot + 1], (size_t)(page_items - slot - 1) * QUEUE_TITLE_LEN);
+    page_items--;
+    total_count--;
     showList();
+    fetch_page = page;
+    startOp(OP_REFRESH_AFTER_REMOVE);
 }
 
 // Only the current page is turned into widgets, so a long queue costs no more than a short one.
@@ -175,9 +244,8 @@ static void showList() {
     lv_obj_clean(list_queue);
 
     int first = page * QUEUE_PAGE_SIZE;
-    int last = min(first + QUEUE_PAGE_SIZE, item_count);
-    for (int i = first; i < last; i++) {
-        lv_obj_t* b = lv_list_add_button(list_queue, LV_SYMBOL_AUDIO, titles[i]);
+    for (int i = first; i < first + page_items; i++) {
+        lv_obj_t* b = lv_list_add_button(list_queue, LV_SYMBOL_AUDIO, titles[i - first]);
         styleButton(b);
         lv_obj_add_event_cb(b, item_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
 
@@ -192,7 +260,7 @@ static void showList() {
         lv_obj_center(l);
     }
 
-    if (item_count == 0) lv_list_add_text(list_queue, "Queue is empty");
+    if (total_count == 0) lv_list_add_text(list_queue, "Queue is empty");
     updateNav(true);
 }
 
@@ -207,24 +275,24 @@ static void showError(const char* error) {
 static void clear_cb(lv_event_t*) {
     if (busy) return;
     setStatus(LV_SYMBOL_REFRESH " Clearing...");
+    fetch_page = 0;
     startOp(OP_CLEAR);
 }
-static void prev_page_cb(lv_event_t*) { if (!busy && page > 0) { page--; showList(); } }
-static void next_page_cb(lv_event_t*) { if (!busy && page < pageCount() - 1) { page++; showList(); } }
+static void loadPage(int target) {
+    if (busy) return;
+    fetch_page = target;
+    setStatus(LV_SYMBOL_REFRESH " Loading...");
+    startOp(OP_REFRESH);
+}
+
+static void prev_page_cb(lv_event_t*) { if (page > 0) loadPage(page - 1); }
+static void next_page_cb(lv_event_t*) { if (page < pageCount() - 1) loadPage(page + 1); }
 
 void setupQueue(lv_obj_t* parent_tab) {
     tab_queue = parent_tab;
 }
 
-// on_build: constructs the widget tree (and titles[], if a previous hideQueue() freed it). Was
-// setupQueue()'s whole body before the screen became lazy-built -- see CLAUDE.md item 29: titles[]
-// alone is 200*96 = 19.2KB permanently reserved on the general heap, the second-largest fixed
-// cost in the project after Lights' old brightness page, and it directly competed with Tuya's
-// TLS handshake for the same limited RAM (no PSRAM on this board) whether or not Queue was ever
-// opened.
 void buildQueue(lv_obj_t* parent) {
-    if (!titles) titles = new char[QUEUE_MAX_ITEMS][QUEUE_TITLE_LEN];
-
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(parent, 0, 0);
 
@@ -260,14 +328,9 @@ void buildQueue(lv_obj_t* parent) {
 }
 
 void refreshQueue() {
-    if (busy) return;
-    setStatus(LV_SYMBOL_REFRESH " Loading...");
-    startOp(OP_REFRESH);
+    loadPage(page);
 }
 
-// on_hide: frees this screen's widgets back to LVGL's pool, and titles[] back to the general
-// heap -- unless an op is still writing into titles[] on its own task right now, in which case
-// it's left allocated rather than raced; the next hide that happens while idle frees it instead.
 void hideQueue() {
     lv_obj_clean(tab_queue);
     list_queue = NULL;
@@ -275,10 +338,6 @@ void hideQueue() {
     btn_prev_page = NULL;
     btn_next_page = NULL;
     label_page = NULL;
-    if (!busy) {
-        delete[] titles;
-        titles = NULL;
-    }
 }
 
 void loopQueue() {
@@ -296,8 +355,7 @@ void loopQueue() {
     if (op_error[0]) {
         showError(op_error);
     } else {
-        // A play tap leaves the list as it is, everything else has new content.
-        if (page >= pageCount()) page = pageCount() - 1;
+        page = fetch_page;
         showList();
     }
 }

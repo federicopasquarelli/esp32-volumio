@@ -45,7 +45,7 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
 
 - [arduino32.ino](arduino32.ino) — `setup()`/`loop()`, wires all modules together.
 - [LvglHandler.cpp](LvglHandler.cpp) — display flush + touch read callbacks, LVGL init. Also owns
-  the screen-timeout/backlight-off-after-3-minutes logic and wake-on-touch.
+  the screen-timeout/backlight-off-after-30-seconds logic and wake-on-touch.
 - [TouchHandler.cpp](TouchHandler.cpp) — XPT2046 touch reading, noise filtering.
 - [UiHandler.cpp](UiHandler.cpp) — top bar (clock, dropdown menu / back button), the player screen
   (art, title/artist/album, transport buttons, volume), and `addScreen()`/`addHiddenScreen()`, the
@@ -65,9 +65,8 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   root.
 - [VolumioQueue.cpp](VolumioQueue.cpp) — queue viewer/editor, HTTP via `/api/v1/getQueue` +
   `/api/v1/commands/?cmd=...`, per-item remove button. Lazy-built/freed (item 29):
-  `buildQueue()`/`refreshQueue()`/`hideQueue()`; `hideQueue()` also frees the 19.2KB `titles[]`
-  buffer back to the general heap (unless a fetch is still writing to it, see the function's own
-  comment).
+  `buildQueue()`/`refreshQueue()`/`hideQueue()`. `getQueue` has no server-side paging, so the
+  response is stream-parsed and only the current page's 4 rows are kept -- see item 34.
 - [PaginationNav.cpp](PaginationNav.cpp) — `createPagerButton()`/`setPagerEnabled()`, the styled
   nav button (Prev/Next/Up/Clear) shared by Library and Queue's bottom bars -- see item 28.
 - [VolumioArtists.cpp](VolumioArtists.cpp) — Artists screen (dropdown entry, via `addScreen`).
@@ -130,7 +129,7 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
    asked for), big round play/pause button centered with prev/next flanking it and
    shuffle/repeat further out, volume slider + numeric readout at the bottom. Mute button
    removed per request. Repeat was accidentally dropped once, then restored next to Next.
-7. **Screen timeout**: backlight off after `SCREEN_TIMEOUT_MS` (3 min, `DisplayConfig.h`) with no
+7. **Screen timeout**: backlight off after `SCREEN_TIMEOUT_MS` (30s, was 3 min, `DisplayConfig.h`) with no
    touch; first touch after sleep just wakes the screen, doesn't also act as a press
    (`LvglHandler.cpp`, `my_touch_read`).
 8. **Album art, first attempt: built, worked, then reverted to a placeholder.** Kept here (rather
@@ -654,6 +653,34 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     the request body's `"service"` is hardcoded to `"mpd"` rather than read from the item, since
     artist entries from `artists://` don't carry their own `service` field the way folder/track
     items do.
+
+33. **Lights lost their initial on/off state, and the brightness slider stopped working -- both
+    from item 29's batch status call.** Checked live: `/v1.0/iot-03/devices/status?device_ids=...`
+    works and has the expected shape, but it's the only Tuya response big enough (~2.6KB) to come
+    back `Transfer-Encoding: chunked` (list/per-device/command responses all carry a
+    `Content-Length`). `tuyaRequest()` fed `http.getStream()` straight into `deserializeJson()`,
+    which then saw the raw chunk-size lines and failed; `fetchDeviceList()` ignores a failed status
+    lookup on purpose, so every light silently stayed at its defaults (off, white mode, 100%). The
+    slider then sent `bright_value_v2` to a bulb actually in colour mode, which changes nothing
+    visible. Fixed by reading the body with `http.getString()` (which decodes chunked) before
+    parsing. Confirmed on hardware. Any Tuya response that grows past a couple of KB can come back
+    chunked, so never parse `getStream()` directly here.
+
+34. **Queue didn't load for long queues: `getQueue` has no server-side pagination.** Checked live
+    (330-item queue): `/api/v1/getQueue` ignores `offset`/`limit`, `start`/`count` and `page`
+    and always returns the whole queue -- 233KB, every item carrying uri/albumart/samplerate etc.
+    `fetchQueue()` deserialized all of it into one `JsonDocument` (filtered, but still 330 entries)
+    into a 200-slot, 19.2KB `titles[]` heap buffer, which doesn't fit on this heap. Now the
+    response is streamed element by element (find `"queue"` + `[`, `deserializeJson()` one object
+    at a time with a filter, then read the `,`/`]` separator by hand), counting every item but
+    keeping only the requested page's 4 titles in a small static array. That means one fetch per
+    page turn, the same model as Library (item 11), at the cost of re-downloading the full body
+    each time. If the queue shrank below the requested page, the same task re-fetches the new
+    last page. Removing a row still drops it locally right away, then reloads the page after a
+    400ms delay (`OP_REFRESH_AFTER_REMOVE`; the removal goes over the WebSocket, so the delay is a
+    guess at how long Volumio takes to apply it) to pull the next item up. Also checks
+    `xTaskCreatePinnedToCore()`'s return now (item 25's follow-up). **Untested on hardware** -- if
+    page turns feel slow, the byte-by-byte stream read of the 233KB body is the first suspect.
 
 - **LVGL's compiled-in fonts are ASCII-only** — the stock Montserrat fonts (`lv_conf.h`, shared,
   outside this repo) only cover code points 32-126 plus LVGL's own icon symbols (checked directly
