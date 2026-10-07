@@ -209,6 +209,8 @@ static void addMenuEntry(const char* name, lv_obj_t* target) {
 // neither action fires from the tile itself: the tile only opens a confirm dialog.
 
 struct MenuAction { const char* title; const char* note; const char* confirm; bool (*fn)(); };
+static const MenuAction update_db_action = {
+    "Update library?", "Volumio rescans the music library for changes.", "Update", updateLibraryDb };
 static const MenuAction restart_action = {
     "Restart Volumio?", "The device reboots and is unreachable for a minute or so.", "Restart", restartVolumio };
 static const MenuAction shutdown_action = {
@@ -260,13 +262,14 @@ static void addMenuAction(const char* label, const MenuAction* action) {
     lv_obj_center(tile_label);
 }
 
-// Adds the Restart/Shut down tiles to the end of the menu grid. Must be called once, after every
+// Adds the Update DB/Restart/Shut down tiles to the end of the menu grid. Must be called once, after every
 // addScreen()/addHiddenScreen() in setup() has already run its addMenuEntry() -- setupUI() itself
 // runs before any of those (it's what creates menu_grid in the first place), so if these were
 // added from inside setupUI() they'd land first, not last. Calling this from arduino32.ino's
 // setup(), after the last addScreen(), is what makes them require scrolling past the rest of the
 // menu to reach, instead of being pinned in their own fixed row below it (the previous behavior).
 void addSystemMenuActions() {
+    addMenuAction("Update DB", &update_db_action);
     addMenuAction(LV_SYMBOL_REFRESH "  Restart", &restart_action);
     addMenuAction(LV_SYMBOL_POWER "  Shut down", &shutdown_action);
 }

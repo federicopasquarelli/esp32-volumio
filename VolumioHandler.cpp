@@ -133,6 +133,8 @@ void updateFolder(const char* uri) {
   ws.sendTXT(msg);
 }
 
+bool updateLibraryDb() { return ws.sendTXT("42[\"updateDb\"]"); }
+
 static bool sendSystemAction(const char* msg) {
   if (!ws.sendTXT(msg)) return false;
   volumio_reachable = false;

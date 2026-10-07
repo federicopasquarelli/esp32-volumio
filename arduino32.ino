@@ -26,8 +26,8 @@ void setup() {
                        addHiddenScreen(buildArtistTracks, refreshArtistTracks, hideArtistTracks));
     setupTuyaLights(addScreen("Lights", buildLights, refreshTuyaLights, hideLights),
                      addHiddenScreen(buildBrightnessPage, refreshBrightnessPage, hideBrightnessPage));
-    // Must come after every addScreen() above -- it appends Restart/Shut down as the grid's last
-    // two tiles, so they land after all of these instead of wherever setupUI() itself ran.
+    // Must come after every addScreen() above -- it appends Update DB/Restart/Shut down as the
+    // grid's last tiles, so they land after all of these instead of wherever setupUI() itself ran.
     addSystemMenuActions();
     WiFi.begin(SECRET_SSID, SECRET_PASS);
     while (WiFi.status() != WL_CONNECTED) delay(100);

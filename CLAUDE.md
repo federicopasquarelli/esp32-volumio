@@ -191,14 +191,8 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     opening the Lights screen normally makes zero auth calls at all).
 15. **All `Serial.*` logging removed project-wide** (including `Serial.begin()`), per explicit
     request. If you need runtime visibility again — e.g. to debug a new Tuya failure mode — you'll
-    need to re-add both. **Temporarily reinstated** while chasing the Library "stuck loading" bug
-    (see item 25's follow-up): `Serial.begin(115200)` in `arduino32.ino`, a 5s heartbeat in
-    `loop()` (to tell "loop() itself is blocked" apart from "just Library's fetch state is stuck"),
-    and `[Lib]`-prefixed logging through `VolumioLibrary.cpp`'s whole fetch path (`startFetch()`,
-    `fetchTask()`, `loopLibrary()`, `showError()`) covering heap headroom
-    (`heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)`, the trustworthy one per the heap quirk
-    below, not `ESP.getFreeHeap()` alone), HTTP result code, deserialization result, and the
-    parsed `item_count`/`total_count`/`has_more`. Strip all of it back out once the bug is found.
+    need to re-add both. It was added back a few times while chasing memory bugs (items 25, 28,
+    29) and removed again each time: none is in the code now.
 16. **Tuya pre-auth at boot.** `startTuyaAuth()` runs the login in the background right after
     `setup()`'s WiFi/NTP work (placed last, so NTP has had a moment to sync -- signing needs a
     roughly-correct clock), so opening the Lights screen for the first time only pays for the
@@ -681,6 +675,13 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     guess at how long Volumio takes to apply it) to pull the next item up. Also checks
     `xTaskCreatePinnedToCore()`'s return now (item 25's follow-up). **Untested on hardware** -- if
     page turns feel slow, the byte-by-byte stream read of the 233KB body is the first suspect.
+
+35. **"Update DB" tile in the menu**, placed before Restart/Shut down (`addSystemMenuActions()`).
+    It sends Volumio's websocket `42["updateDb"]` with no payload (`updateLibraryDb()` in
+    `VolumioHandler.cpp`). With no URI, Volumio updates the whole library. The folder context menu
+    sends the same event with a URI to update just that folder. It reuses the Restart/Shut down
+    confirm dialog, so if the websocket is down the dialog says "Volumio is unreachable". Unlike
+    those two, it doesn't set the reconnect hold-off. Confirmed on hardware.
 
 - **LVGL's compiled-in fonts are ASCII-only** — the stock Montserrat fonts (`lv_conf.h`, shared,
   outside this repo) only cover code points 32-126 plus LVGL's own icon symbols (checked directly
