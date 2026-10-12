@@ -183,8 +183,10 @@ static bool tuyaRequest(const char* method, const char* pathAndQuery, const char
         return false;
     }
 
-    DeserializationError jerr = deserializeJson(doc, http.getStream());
+    // getString() decodes Transfer-Encoding: chunked (the batch status response); getStream() doesn't.
+    String payload = http.getString();
     http.end();
+    DeserializationError jerr = deserializeJson(doc, payload);
     if (jerr) {
         strlcpy(errOut, "Invalid response", errLen);
         return false;
