@@ -10,10 +10,11 @@
 // own font-generation script (lvgl/scripts/generators/built_in_font/) with the range extended to
 // include Latin-1 Supplement (0xA0-0xFF) and the specific smart-punctuation code points. Same
 // visual style as the stock fonts they replace, just a wider glyph set -- see the "Opts:" comment
-// at the top of each font_montserrat_ext_*.c for the exact lv_font_conv command used.
+// at the top of each src/fonts/font_montserrat_ext_*.c for the exact lv_font_conv command used.
 LV_FONT_DECLARE(lv_font_montserrat_ext_12)
 LV_FONT_DECLARE(lv_font_montserrat_ext_14)
 LV_FONT_DECLARE(lv_font_montserrat_ext_18)
+// Only digits, "%", space and LV_SYMBOL_POWER -- regenerate with more glyphs before using it for other text.
 LV_FONT_DECLARE(lv_font_montserrat_ext_32)
 
 #endif

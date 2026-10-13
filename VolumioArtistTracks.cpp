@@ -1,5 +1,4 @@
 #include "VolumioArtistTracks.h"
-#include "arduino_secrets.h"
 #include "DisplayConfig.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -7,6 +6,8 @@
 #include "CustomFonts.h"
 #include "PaginationNav.h"
 #include "UiHandler.h"
+#include "VolumioApi.h"
+#include "QueueActionMenu.h"
 
 // Per-artist track list, opened by tapping a row on the Artists screen (VolumioArtists.cpp).
 // Browsing "artists://<name>" (confirmed live) returns TWO separate lists in the same response --
@@ -70,8 +71,7 @@ static void fetchTask(void*) {
 
     // artist_uri is used as-is, NOT urlEncode()'d -- see this file's header comment / the .h's
     // openArtistTracks() comment for why re-encoding it would corrupt it.
-    String url = String("http://") + SECRET_VOLUMIO_HOST + ":" + SECRET_VOLUMIO_PORT +
-                 "/api/v1/browse?uri=" + artist_uri +
+    String url = volumioUrl("browse?uri=") + artist_uri +
                  "&offset=" + String(fetch_page * TRACKS_PAGE_SIZE) + "&limit=" + String(TRACKS_PAGE_SIZE);
     http.setReuse(true);
     http.setTimeout(8000);
@@ -131,75 +131,6 @@ static void startFetch(int pageToFetch) {
     }
 }
 
-// --- Playing a track (addToQueue + play-Nth, same shape as VolumioLibrary.cpp's ACTION_PLAY) ---
-
-static String baseUrl() {
-    return String("http://") + SECRET_VOLUMIO_HOST + ":" + SECRET_VOLUMIO_PORT + "/api/v1/";
-}
-
-static int postJson(const char* path, const JsonDocument& body) {
-    WiFiClient client;
-    HTTPClient req;
-    req.begin(client, baseUrl() + path);
-    req.setTimeout(8000);
-    req.addHeader("Content-Type", "application/json");
-    String payload;
-    serializeJson(body, payload);
-    int code = req.POST(payload);
-    req.end();
-    return code;
-}
-
-// Number of tracks in the queue, or -1 on failure.
-static int queueLength() {
-    WiFiClient client;
-    HTTPClient req;
-    req.begin(client, baseUrl() + "getQueue");
-    req.setTimeout(8000);
-    int len = -1;
-    if (req.GET() == HTTP_CODE_OK) {
-        JsonDocument filter;
-        filter["queue"][0]["uri"] = true;
-        JsonDocument doc;
-        if (!deserializeJson(doc, req.getStream(), DeserializationOption::Filter(filter))) len = doc["queue"].size();
-    }
-    req.end();
-    return len;
-}
-
-static volatile bool play_running = false;
-static TrackItem play_item;  // copied before the task starts -- tracks[] may get refetched/paged
-
-static void playTask(void*) {
-    JsonDocument body;
-    body["service"] = play_item.service;
-    body["uri"] = play_item.uri;
-    body["title"] = play_item.title;
-
-    // No REST "add and play": queue the track, then play it by its (new) position.
-    int first = queueLength();
-    if (first >= 0 && postJson("addToQueue", body) > 0) {
-        WiFiClient client;
-        HTTPClient req;
-        req.begin(client, baseUrl() + "commands/?cmd=play&N=" + String(first));
-        req.setTimeout(8000);
-        req.GET();
-        req.end();
-    }
-
-    play_running = false;
-    vTaskDelete(NULL);
-}
-
-static void playTrack(const TrackItem& item) {
-    if (play_running) return;
-    play_item = item;
-    play_running = true;
-    if (xTaskCreatePinnedToCore(playTask, "ArtistPlay", 8192, NULL, 1, NULL, 1) != pdPASS) {
-        play_running = false;
-    }
-}
-
 static void updateNav(bool listing) {
     char txt[24];
     formatPageLabel(txt, sizeof(txt), listing, page, TRACKS_PAGE_SIZE, total_count);
@@ -233,7 +164,7 @@ static void styleButton(lv_obj_t* btn) {
 
 static void track_cb(lv_event_t* e) {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (idx >= 0 && idx < track_count) playTrack(tracks[idx]);
+    if (idx >= 0 && idx < track_count) startQueueAction(QUEUE_PLAY, tracks[idx].service, tracks[idx].uri, tracks[idx].title);
 }
 
 // tracks[] only ever holds the page just fetched (server-side offset/limit already did the

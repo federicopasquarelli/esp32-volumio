@@ -1,9 +1,9 @@
 #include "VolumioQueue.h"
-#include "arduino_secrets.h"
 #include "DisplayConfig.h"
 #include "VolumioHandler.h"
 #include "CustomFonts.h"
 #include "PaginationNav.h"
+#include "VolumioApi.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -34,96 +34,38 @@ static volatile bool busy = false;
 static volatile bool op_done = false;
 static char op_error[32];
 
-static String apiUrl(const char* path) {
-    return String("http://") + SECRET_VOLUMIO_HOST + ":" + SECRET_VOLUMIO_PORT + "/api/v1/" + path;
-}
-
 static bool httpGet(const char* path) {
     WiFiClient client;
     HTTPClient http;
-    http.begin(client, apiUrl(path));
+    http.begin(client, volumioUrl(path));
     http.setTimeout(8000);
     int code = http.GET();
     http.end();
     return code == HTTP_CODE_OK;
 }
 
-static int nextNonSpace(Stream& s) {
-    char c;
-    while (s.readBytes(&c, 1) == 1) {
-        if (c != ' ' && c != '\n' && c != '\r' && c != '\t') return c;
-    }
-    return -1;
+static void collectTitle(JsonObject item, void*) {
+    if (page_items >= QUEUE_PAGE_SIZE) return;
+    const char* name = item["name"] | (item["title"] | "");
+    const char* artist = item["artist"] | "";
+    char* dst = titles[page_items++];
+    if (artist[0]) snprintf(dst, QUEUE_TITLE_LEN, "%s - %s", artist, name);
+    else strlcpy(dst, name, QUEUE_TITLE_LEN);
 }
 
-static int peekNonSpace(Stream& s) {
-    unsigned long start = millis();
-    while (millis() - start < 2000) {
-        if (!s.available()) { delay(1); continue; }
-        int c = s.peek();
-        if (c != ' ' && c != '\n' && c != '\r' && c != '\t') return c;
-        s.read();
-    }
-    return -1;
-}
-
+// Only the requested page's items are parsed; the rest of the queue is just counted.
 static bool streamQueuePage(int wanted_page, int& total) {
-    WiFiClient client;
-    HTTPClient http;
-    http.begin(client, apiUrl("getQueue"));
-    http.setTimeout(8000);
-
-    if (http.GET() != HTTP_CODE_OK) {
-        strlcpy(op_error, "Request failed", sizeof(op_error));
-        http.end();
-        return false;
-    }
-
-    Stream& stream = http.getStream();
-    stream.setTimeout(8000);
-    if (!stream.find("\"queue\"") || !stream.find("[")) {
-        strlcpy(op_error, "Invalid response", sizeof(op_error));
-        http.end();
-        return false;
-    }
-
     JsonDocument filter;
     filter["name"] = true;
     filter["title"] = true;
     filter["artist"] = true;
 
-    int first = wanted_page * QUEUE_PAGE_SIZE;
-    int idx = 0;
     page_items = 0;
-    bool ok = true;
-
-    stream.setTimeout(2000);
-    while (true) {
-        if (peekNonSpace(stream) == ']') break;
-
-        JsonDocument doc;
-        if (deserializeJson(doc, stream, DeserializationOption::Filter(filter))) { ok = false; break; }
-
-        if (idx >= first && idx < first + QUEUE_PAGE_SIZE) {
-            const char* name = doc["name"] | (doc["title"] | "");
-            const char* artist = doc["artist"] | "";
-            char* dst = titles[page_items++];
-            if (artist[0]) snprintf(dst, QUEUE_TITLE_LEN, "%s - %s", artist, name);
-            else strlcpy(dst, name, QUEUE_TITLE_LEN);
-        }
-        idx++;
-
-        int sep = nextNonSpace(stream);
-        if (sep == ']') break;
-        if (sep != ',') { ok = false; break; }
-    }
-    http.end();
-
-    if (!ok) {
-        strlcpy(op_error, "Invalid response", sizeof(op_error));
+    total = streamQueue(wanted_page * QUEUE_PAGE_SIZE, QUEUE_PAGE_SIZE, filter, collectTitle, NULL);
+    if (total < 0) {
+        strlcpy(op_error, "Request failed", sizeof(op_error));
         return false;
     }
-    total = idx;
     return true;
 }
 

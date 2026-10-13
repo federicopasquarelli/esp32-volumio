@@ -486,6 +486,17 @@ lv_obj_t* addHiddenScreen(void (*on_build)(lv_obj_t*), void (*on_show)(void), vo
     return createScreen(on_build, on_show, on_hide);
 }
 
+// Re-setting a label's text redraws it and restarts a scrolling label from the start, so only
+// touch it when the text actually changed.
+static void setLabelIfChanged(lv_obj_t* label, const char* text) {
+    if (strcmp(lv_label_get_text(label), text) != 0) lv_label_set_text(label, text);
+}
+
+// What the shuffle/repeat buttons currently show (-1 = not styled yet), so a pushState that
+// doesn't change them doesn't re-apply their styles.
+static int shown_shuffle = -1;
+static int shown_repeat_mode = -1;  // 0 off, 1 repeat all, 2 repeat single
+
 void updateVolumioUI(const char* title, const char* artist, const char* album, bool airplay, bool isPlaying, bool shuffle, bool repeat, bool repeatSingle, int elapsedSec, int durationSec) {
 
     currentShuffle = shuffle;
@@ -602,42 +613,40 @@ void updateVolumioUI(const char* title, const char* artist, const char* album, b
         else lv_obj_remove_state(b, LV_STATE_DISABLED);
     }
 
-    lv_label_set_text(label_title, title);
-    lv_label_set_text(label_artist, airplay ? "Airplay" : artist);
-    lv_label_set_text(label_album, album);
-    lv_label_set_text(btn_label, isPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+    setLabelIfChanged(label_title, title);
+    setLabelIfChanged(label_artist, airplay ? "Airplay" : artist);
+    setLabelIfChanged(label_album, album);
+    setLabelIfChanged(btn_label, isPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
 
+    // A new duration with the same elapsed second would otherwise skip the redraw.
+    if (durationSec != cur_duration_sec) last_displayed_elapsed = -1;
     base_elapsed_sec = elapsedSec;
     base_elapsed_at_ms = millis();
     cur_duration_sec = durationSec;
     cur_is_playing = isPlaying;
     refreshPlaybackClock();
 
-    // Update Shuffle button state
-    if (shuffle) {
-        set_btn_active_style(btn_shuffle);
-    } else {
-        set_btn_inactive_style(btn_shuffle);
+    if (shuffle != shown_shuffle) {
+        shown_shuffle = shuffle;
+        if (shuffle) set_btn_active_style(btn_shuffle);
+        else set_btn_inactive_style(btn_shuffle);
     }
 
-    // Update Repeat button state
-    lv_obj_t* repeat_label = lv_obj_get_child(btn_repeat, 0);
-    if (repeatSingle) {
-        lv_label_set_text(repeat_label, LV_SYMBOL_REFRESH " 1");
-        set_btn_active_style(btn_repeat);
-    } else if (repeat) {
-        lv_label_set_text(repeat_label, LV_SYMBOL_REFRESH);
-        set_btn_active_style(btn_repeat);
-    } else {
-        lv_label_set_text(repeat_label, LV_SYMBOL_REFRESH);
-        set_btn_inactive_style(btn_repeat);
+    int repeat_mode = repeatSingle ? 2 : (repeat ? 1 : 0);
+    if (repeat_mode != shown_repeat_mode) {
+        shown_repeat_mode = repeat_mode;
+        lv_label_set_text(lv_obj_get_child(btn_repeat, 0), repeat_mode == 2 ? LV_SYMBOL_REFRESH " 1" : LV_SYMBOL_REFRESH);
+        if (repeat_mode) set_btn_active_style(btn_repeat);
+        else set_btn_inactive_style(btn_repeat);
     }
 }
 
 void updateVolumeUI(int volume) {
     if (slider_volume) {
         lv_slider_set_value(slider_volume, volume, LV_ANIM_OFF);
-        lv_label_set_text_fmt(label_volume, "%d", volume);
+        char txt[8];
+        snprintf(txt, sizeof(txt), "%d", volume);
+        setLabelIfChanged(label_volume, txt);
     }
 }
 

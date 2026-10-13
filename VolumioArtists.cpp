@@ -1,5 +1,4 @@
 #include "VolumioArtists.h"
-#include "arduino_secrets.h"
 #include "DisplayConfig.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -7,6 +6,7 @@
 #include "CustomFonts.h"
 #include "PaginationNav.h"
 #include "VolumioArtistTracks.h"
+#include "QueueActionMenu.h"
 
 // Same /api/v1/browse endpoint VolumioLibrary.cpp uses for "music-library", just rooted at
 // "artists://" instead -- confirmed live against volumio.local that it takes the exact same
@@ -57,30 +57,12 @@ static char fetch_error[32];
 static WiFiClient wifi_client;
 static HTTPClient http;
 
-static String urlEncode(const char* msg) {
-    static const char hex[] = "0123456789ABCDEF";
-    String out;
-    out.reserve(strlen(msg) * 3);
-    for (const char* p = msg; *p; p++) {
-        unsigned char c = *p;
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~' || c == '/') {
-            out += (char)c;
-        } else {
-            out += '%';
-            out += hex[c >> 4];
-            out += hex[c & 0xF];
-        }
-    }
-    return out;
-}
-
 static void showError(const char* error);  // defined further down, used by startFetch() below
 
 static void fetchTask(void*) {
     fetch_error[0] = '\0';
 
-    String url = String("http://") + SECRET_VOLUMIO_HOST + ":" + SECRET_VOLUMIO_PORT +
-                 "/api/v1/browse?uri=" + urlEncode(ARTISTS_ROOT_URI) +
+    String url = volumioUrl("browse?uri=") + urlEncode(ARTISTS_ROOT_URI) +
                  "&offset=" + String(fetch_page * ARTISTS_PAGE_SIZE) + "&limit=" + String(ARTISTS_PAGE_SIZE);
     http.setReuse(true);
     http.setTimeout(8000);
@@ -175,149 +157,6 @@ static void styleButton(lv_obj_t* btn) {
 // LVGL still sends CLICKED on release after a long press, so remember the press was consumed --
 // same pattern VolumioLibrary.cpp's item_cb() uses for its folder rows.
 static bool long_press_handled = false;
-static ArtistItem menu_item;
-static volatile bool action_menu_running = false;
-static int action_requested = 0;
-
-static void overlay_cb(lv_event_t* e) {
-    // Only taps on the dimmed background close the menu, not taps bubbling up from the panel.
-    if (lv_event_get_target_obj(e) == lv_event_get_current_target_obj(e)) lv_obj_delete_async(lv_event_get_target_obj(e));
-}
-
-// Same three as VolumioLibrary.cpp's folder actions, minus "Update folder": an artist here is a
-// virtual grouping across (possibly many) real folders, not one Volumio can rescan as a unit.
-enum ArtistAction { ACTION_PLAY, ACTION_ADD_TO_QUEUE, ACTION_CLEAR_AND_PLAY };
-
-static String baseUrl() {
-    return String("http://") + SECRET_VOLUMIO_HOST + ":" + SECRET_VOLUMIO_PORT + "/api/v1/";
-}
-
-static int postJson(const char* path, const JsonDocument& body) {
-    WiFiClient client;
-    HTTPClient req;
-    req.begin(client, baseUrl() + path);
-    req.setTimeout(8000);
-    req.addHeader("Content-Type", "application/json");
-    String payload;
-    serializeJson(body, payload);
-    int code = req.POST(payload);
-    req.end();
-    return code;
-}
-
-// Number of tracks in the queue, or -1 on failure.
-static int queueLength() {
-    WiFiClient client;
-    HTTPClient req;
-    req.begin(client, baseUrl() + "getQueue");
-    req.setTimeout(8000);
-    int len = -1;
-    if (req.GET() == HTTP_CODE_OK) {
-        JsonDocument filter;
-        filter["queue"][0]["uri"] = true;
-        JsonDocument doc;
-        if (!deserializeJson(doc, req.getStream(), DeserializationOption::Filter(filter))) len = doc["queue"].size();
-    }
-    req.end();
-    return len;
-}
-
-// Confirmed live against volumio.local: addToQueue with an artist's own uri
-// ("artists://<name>", exactly as given by the artists:// list -- see this file's header comment
-// about not re-encoding it) queues every one of that artist's tracks, the same way a folder's uri
-// does in VolumioLibrary.cpp. "service" is hardcoded "mpd" here (artist entries don't carry their
-// own service field the way folder/track items do -- there was nothing to read it from).
-static void artistActionTask(void* pv) {
-    ArtistItem* item = (ArtistItem*)pv;
-
-    JsonDocument body;
-    body["service"] = "mpd";
-    body["uri"] = item->uri;
-    body["title"] = item->title;
-
-    switch (action_requested) {
-        case ACTION_ADD_TO_QUEUE:
-            postJson("addToQueue", body);
-            break;
-        case ACTION_CLEAR_AND_PLAY: {
-            // Sent both flat and wrapped in "item" so either body shape is understood.
-            JsonDocument wrapped = body;
-            wrapped["item"] = body;
-            postJson("replaceAndPlay", wrapped);
-            break;
-        }
-        case ACTION_PLAY: {
-            // No REST "add and play": queue the artist's tracks, then play the first one added.
-            int first = queueLength();
-            if (first >= 0 && postJson("addToQueue", body) > 0) {
-                WiFiClient client;
-                HTTPClient req;
-                req.begin(client, baseUrl() + "commands/?cmd=play&N=" + String(first));
-                req.setTimeout(8000);
-                req.GET();
-                req.end();
-            }
-            break;
-        }
-    }
-
-    delete item;
-    action_menu_running = false;
-    vTaskDelete(NULL);
-}
-
-static void startAction(int action, const ArtistItem& item) {
-    if (action_menu_running) return;
-    action_requested = action;
-    action_menu_running = true;
-    if (xTaskCreatePinnedToCore(artistActionTask, "ArtistAction", 8192, new ArtistItem(item), 1, NULL, 1) != pdPASS) {
-        action_menu_running = false;
-    }
-}
-
-static void menu_action_cb(lv_event_t* e) {
-    int action = (int)(intptr_t)lv_event_get_user_data(e);
-    startAction(action, menu_item);
-    // The overlay is the panel's parent.
-    lv_obj_t* overlay = lv_obj_get_parent(lv_obj_get_parent(lv_event_get_target_obj(e)));
-    lv_obj_delete_async(overlay);
-}
-
-static void showContextMenu(const ArtistItem& item) {
-    menu_item = item;
-
-    lv_obj_t* overlay = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(overlay, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_radius(overlay, 0, 0);
-    lv_obj_set_style_border_width(overlay, 0, 0);
-    lv_obj_set_style_bg_color(overlay, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(overlay, LV_OPA_70, 0);
-    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(overlay, overlay_cb, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t* menu = lv_list_create(overlay);
-    lv_obj_set_size(menu, 240, LV_SIZE_CONTENT);
-    lv_obj_center(menu);
-    // Jitter on the resistive touch would otherwise start a scroll and cancel the button click.
-    lv_obj_remove_flag(menu, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(menu, 0, 0);
-    lv_obj_set_style_pad_row(menu, 0, 0);
-    lv_obj_set_style_bg_color(menu, lv_color_hex(0x111111), 0);
-    lv_obj_set_style_text_color(menu, lv_color_hex(0xAAAAAA), 0);
-    lv_obj_set_style_text_font(menu, &lv_font_montserrat_ext_14, 0);
-
-    lv_obj_t* title = lv_list_add_text(menu, item.title);
-    lv_label_set_long_mode(title, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_width(title, 224);
-
-    static const char* icons[] = { LV_SYMBOL_PLAY, LV_SYMBOL_PLUS, LV_SYMBOL_TRASH };
-    static const char* names[] = { "Play", "Add to queue", "Clear and play" };
-    for (int i = 0; i < 3; i++) {
-        lv_obj_t* b = lv_list_add_button(menu, icons[i], names[i]);
-        styleButton(b);
-        lv_obj_add_event_cb(b, menu_action_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
-    }
-}
 
 static void item_cb(lv_event_t* e) {
     lv_event_code_t code = lv_event_get_code(e);
@@ -328,7 +167,9 @@ static void item_cb(lv_event_t* e) {
         long_press_handled = false;
     } else if (code == LV_EVENT_LONG_PRESSED) {
         long_press_handled = true;
-        showContextMenu(items[idx]);
+        // An artist's uri ("artists://<name>", as given, not re-encoded) queues all of their tracks.
+        // Artist entries have no "service" field, hence "mpd".
+        showQueueActionMenu(items[idx].title, items[idx].uri, "mpd", false);
     } else if (code == LV_EVENT_CLICKED) {
         if (long_press_handled) long_press_handled = false;
         else openArtistTracks(items[idx].uri, items[idx].title);

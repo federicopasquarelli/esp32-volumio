@@ -604,7 +604,7 @@ static bool sendToggle(int idx, bool target, char* errOut, size_t errLen) {
 // 10..1000 and colour_data_v2 as an object {"h","s","v"} with v 0..1000, but don't say which one
 // governs brightness in which work_mode, nor whether either turns an off light on -- so this
 // follows what each code is for (colour mode -> v, everything else -> bright_value_v2) and, for a
-// light that's currently off, sends switch_led=true in the same request. Untested on hardware.
+// light that's currently off, sends switch_led=true in the same request.
 static bool postCommands(int idx, JsonDocument& body, char* errOut, size_t errLen) {
     char path[64];
     snprintf(path, sizeof(path), "/v1.0/iot-03/devices/%s/commands", devices[idx].id);

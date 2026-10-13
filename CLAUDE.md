@@ -43,6 +43,8 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
 
 ## File map
 
+- [arduino.sh](arduino.sh) — **use this to build/flash** (`compile`, `flash`, `port-check`, `clean`, …)
+  instead of raw `arduino-cli`; it already has the huge_app FQBN and port baked in.
 - [arduino32.ino](arduino32.ino) — `setup()`/`loop()`, wires all modules together.
 - [LvglHandler.cpp](LvglHandler.cpp) — display flush + touch read callbacks, LVGL init. Also owns
   the screen-timeout/backlight-off-after-30-seconds logic and wake-on-touch.
@@ -69,6 +71,12 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   response is stream-parsed and only the current page's 4 rows are kept -- see item 34.
 - [PaginationNav.cpp](PaginationNav.cpp) — `createPagerButton()`/`setPagerEnabled()`, the styled
   nav button (Prev/Next/Up/Clear) shared by Library and Queue's bottom bars -- see item 28.
+- [VolumioApi.cpp](VolumioApi.cpp) — shared Volumio REST helpers (`volumioUrl()`, `urlEncode()`,
+  `postJson()`, `queueLength()`, `streamQueue()`) and `runQueueAction()` (Play / Add to queue /
+  Clear and play), used by Library, Artists, ArtistTracks and Queue -- see items 36 and 37.
+- [QueueActionMenu.cpp](QueueActionMenu.cpp) — the long-press menu (Play / Add to queue / Clear
+  and play, plus Update folder for Library) shared by Library and Artists, and
+  `startQueueAction()`, the background task every "play this" tap goes through -- see item 38.
 - [VolumioArtists.cpp](VolumioArtists.cpp) — Artists screen (dropdown entry, via `addScreen`).
   Flat, paginated list of every artist, browsing `artists://` the same way `VolumioLibrary.cpp`
   browses `music-library` -- see item 30. Lazy-built/freed like every other screen (item 29) via
@@ -81,7 +89,7 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   see item 31.
 - [DisplayConfig.h](DisplayConfig.h) — pins, screen dims, shared constants (`COLOR_ACCENT`,
   `TOP_BAR_H`, `SCREEN_TIMEOUT_MS`).
-- [CustomFonts.h](CustomFonts.h) + `font_montserrat_ext_{12,14,18,32}.c` — Montserrat fonts
+- [CustomFonts.h](CustomFonts.h) + `src/fonts/font_montserrat_ext_{12,14,18,32}.c` — Montserrat fonts
   regenerated with a wider glyph range than LVGL's stock ones (accented letters, smart
   punctuation); see the quirks section below for why these exist and how to regenerate/resize
   them.
@@ -273,8 +281,8 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     brightness in which mode, nor whether either turns an off light on, so `sendBrightness()`
     follows what each code is for (colour mode → `colour_data_v2.v` with h/s resent unchanged,
     otherwise `bright_value_v2`; slider percent × 10 either way) and, for a light that's off, adds
-    `switch_led: true` to the same request. **Untested on hardware** — verify both bulbs (one
-    was in `colour`, one in `white` mode when checked). Also: while researching this, same-value
+    `switch_led: true` to the same request. **Confirmed on hardware** (brightness and colour
+    both work). Also: while researching this, same-value
     writes (bright/colour set to their current values, lights off, state read back unchanged)
     were sent to the real bulbs to check the request format was accepted — the user preferred
     working from the official docs, so don't probe live devices with commands again unasked.
@@ -287,7 +295,7 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     on whether `colour_data_v2` alone switches a white-mode bulb over, so it doesn't rely on that.
     Goes through the same single-in-flight queue (`pending_colour_*`, last tap wins; runs after a
     pending brightness). The selected swatch (white border) follows the light's real state and
-    snaps back if a command fails. **Untested on hardware**, like the rest of this page.
+    snaps back if a command fails. Confirmed on hardware.
 
 21. **Menu is now a full-screen overlay.** The old 150px dropdown panel under the toggle became
     `menu_list` in `UiHandler.cpp`: a 320x240 opaque overlay (covers the header too) with a "Menu"
@@ -548,7 +556,7 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
       `titles[]` buffer**, the second-largest fixed cost in the project after Lights' brightness
       page, back to the general heap -- unless a fetch/op is still writing into it in the
       background, in which case it's deliberately left allocated rather than raced, and freed on
-      the next hide that happens while idle instead). The brightness/colour sub-page (item 26's
+      the next hide that happens while idle instead; superseded by item 34, which replaced that buffer with a small static array). The brightness/colour sub-page (item 26's
       earlier "build once on first long-press, keep forever" interim fix) now goes through the
       same `on_build`/`on_hide` machinery instead of its own one-off `brightness_built` guard.
       Player and the full-screen menu overlay were deliberately left out of this -- the player is
@@ -683,6 +691,47 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     confirm dialog, so if the websocket is down the dialog says "Volumio is unreachable". Unlike
     those two, it doesn't set the reconnect hold-off. Confirmed on hardware.
 
+36. **Shared `VolumioApi.cpp`.** Library, Artists and ArtistTracks each had their own identical
+    copy of `baseUrl()`/`postJson()`/`queueLength()` (plus `urlEncode()` in two of them) and of
+    the Play / Add to queue / Clear and play request sequence (items 3, 31, 32). These now live
+    once in `VolumioApi.cpp`, with the request sequence as `runQueueAction()`; Queue uses its
+    `volumioUrl()` too. Library's extra "Update folder" action is `QUEUE_CLEAR_AND_PLAY + 1` so the
+    menu index maps straight onto `QueueAction`. Behaviour unchanged. Open follow-ups are tracked
+    in [TODO.md](TODO.md).
+
+37. **`getQueue` is streamed everywhere, and items outside the wanted page aren't parsed.**
+    `queueLength()` (used by every "Play" to find the index to play from) used to deserialize the
+    whole queue into a `JsonDocument` just to call `.size()` -- roughly 30KB of heap for a
+    330-item queue, which is the same problem item 34 fixed for the Queue screen. Both now go
+    through `streamQueue()` in `VolumioApi.cpp`: it walks the `queue` array element by element,
+    `deserializeJson()`s only items in the requested range and skips the rest with a small
+    string/escape-aware brace counter (`skipValue()`), so counting costs no heap at all and the
+    Queue screen no longer parses ~326 items it throws away. The total count is still the full
+    queue length. The walker logic was checked off-device (a Python port) against the live queue
+    and a synthetic 330-item one with escaped quotes and braces inside titles. **Untested on
+    hardware.**
+
+
+38. **Shared long-press menu (`QueueActionMenu.cpp`).** Library and Artists each built their own
+    copy of the same overlay + action list + background task (items 3, 32). Now both call
+    `showQueueActionMenu(title, uri, service, with_update)`; Library passes `with_update = true`
+    for its extra "Update folder" entry (still the websocket `updateFolder()`), Artists passes
+    `"mpd"` as the service (artist entries carry none). Plain taps on a track (Library and
+    ArtistTracks) go through the same `startQueueAction()`. The task now copies the item into a
+    static buffer instead of `new`/`delete`, and checks `xTaskCreatePinnedToCore()`'s return --
+    Library's copy didn't, so a failed task creation used to lock the menu until reboot. One
+    action runs at a time across all screens (a tap while one is in flight is ignored, as it was
+    per screen before). Confirmed on hardware.
+
+39. **Player only redraws what changed on a pushState.** Volumio sends a full pushState for every
+    change (volume, seek, shuffle...), and `updateVolumioUI()` used to re-set every label and
+    re-apply every button style each time; re-setting a scrolling label's text restarts its scroll.
+    Now `setLabelIfChanged()` skips identical text (title/artist/album/play icon/volume number) and
+    shuffle/repeat are only restyled when their state actually changes (`shown_shuffle`,
+    `shown_repeat_mode`). Also fixed: a new track with a different duration but the same elapsed
+    second skipped redrawing the time label (`last_displayed_elapsed` reset on duration change).
+    Confirmed on hardware.
+
 - **LVGL's compiled-in fonts are ASCII-only** — the stock Montserrat fonts (`lv_conf.h`, shared,
   outside this repo) only cover code points 32-126 plus LVGL's own icon symbols (checked directly
   in the compiled font source, `lv_font_montserrat_18.c`'s `cmaps[]`). No curly quotes, en/em
@@ -691,13 +740,17 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   missing-glyph box on screen. First fixed with a text-rewriting workaround
   (`sanitizeText()`, rewriting smart punctuation to ASCII lookalikes), then replaced with the
   actual fix: `CustomFonts.h` declares 4 regenerated Montserrat fonts
-  (`lv_font_montserrat_ext_{12,14,18,32}`, in `font_montserrat_ext_*.c`) with the glyph range
+  (`lv_font_montserrat_ext_{12,14,18,32}`, in `src/fonts/font_montserrat_ext_*.c`) with the glyph range
   extended to Latin-1 Supplement (accented letters) plus the specific smart-punctuation code
   points, built with `lv_font_conv` (`npx lv_font_conv`) from the exact same source LVGL's own
   bundled fonts use (`lvgl/scripts/generators/built_in_font/Montserrat-Medium.ttf` +
   `built_in_font_gen.py`'s icon-symbol list), so they're visually identical to the stock fonts,
-  just with more glyphs. Adds roughly 250KB combined at the four sizes actually used — comfortably
-  within the ~1.5MB of free flash. Every `&lv_font_montserrat_NN` reference in the code was
+  just with more glyphs. Together they're about 70KB of flash in the binary. The dash range is the
+  whole U+2010-2015 block plus U+2212 (minus), not just en/em dash: Volumio metadata turned out to
+  use U+2012 (figure dash, e.g. a title "15‒38"), which rendered as nothing. **Exception: the 32px
+  font is subset to just digits, `%`, space and `LV_SYMBOL_POWER`** (all it renders: the Lights
+  power icons and the brightness readout), which cut it from 68KB to about 3KB -- regenerate it with
+  more glyphs (command in the file's header) before using it for any other text. Every `&lv_font_montserrat_NN` reference in the code was
   swapped for `&lv_font_montserrat_ext_NN`, and every list/container showing external metadata
   (`list_library`, `list_queue`, the Library long-press context menu, `cont_lights`) got an
   explicit `lv_obj_set_style_text_font(..., &lv_font_montserrat_ext_14, 0)` so children inherit it
