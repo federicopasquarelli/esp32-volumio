@@ -1,5 +1,6 @@
 #include "LvglHandler.h"
 #include "TouchHandler.h"
+#include "UiHandler.h"
 
 Arduino_DataBus *bus = new Arduino_ESP32SPI(DC, CS, SCK, MOSI, MISO);
 Arduino_GFX *gfx = new Arduino_ILI9341(bus, RST, 0, true);
@@ -77,5 +78,7 @@ void loopLVGL() {
     if (screen_on && millis() - last_activity > SCREEN_TIMEOUT_MS) {
         screen_on = false;
         digitalWrite(TFT_BL, LOW);
+        // Switched now, not on wake, so the player is already drawn when the backlight comes back.
+        showPlayer();
     }
 }

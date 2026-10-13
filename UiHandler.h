@@ -30,6 +30,8 @@ void addSystemMenuActions();
 // Switches to the given screen (any addScreen()/addHiddenScreen() result, or the player) the same
 // way the dropdown does: hides the others, closes the dropdown, runs its on_show.
 void showScreen(lv_obj_t* target);
+// Back to the player, closing the menu, its confirm dialog and any long-press menu.
+void showPlayer();
 // airplay: Volumio's source is AirPlay -- play/prev/next are disabled and the artist reads "Airplay".
 void updateVolumioUI(const char* title, const char* artist, const char* album, bool airplay, bool isPlaying, bool shuffle, bool repeat, bool repeatSingle, int elapsedSec, int durationSec);
 void updateVolumeUI(int volume);

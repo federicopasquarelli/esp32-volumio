@@ -14,14 +14,17 @@
 #define TUYA_NAME_LEN     40
 #define TUYA_ID_LEN       32
 #define TUYA_BTN_SIZE     130
-// The code Tuya uses for a light's on/off switch in its status/command API (confirmed against
-// two real "Extrastar A60" bulbs -- other device categories may use a different code, e.g.
-// "switch_1" for a plain switch/socket).
-#define TUYA_SWITCH_CODE  "switch_led"
+#define TUYA_BTN_COMPACT  96
+#define TUYA_CODE_LEN     12
+
 
 struct TuyaDevice {
     char name[TUYA_NAME_LEN];
     char id[TUYA_ID_LEN];
+    // On/off code: "switch_led" for lights (category dj), "switch_1" for a smart switch/socket
+    // (cz) -- taken from the device's own status, category is only the fallback.
+    char switch_code[TUYA_CODE_LEN];
+    bool dimmable;  // has bright_value_v2; only these get the long-press brightness page
     bool on;
     // Brightness lives in different places depending on work_mode: bright_value_v2 for "white",
     // colour_data_v2's v for "colour" (h/s kept so a brightness change can resend them as-is).
@@ -276,7 +279,6 @@ static bool tuyaCall(const char* method, const char* pathAndQuery, const char* b
 // and black (same as the screen background, so it reads as transparent/outline-only) with just
 // an accent border when off.
 static void styleDeviceButton(lv_obj_t* btn, bool on) {
-    lv_obj_set_size(btn, TUYA_BTN_SIZE, TUYA_BTN_SIZE);
     lv_obj_set_style_radius(btn, 16, 0);
     if (on) {
         lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_ACCENT), 0);
@@ -457,6 +459,7 @@ static void device_cb(lv_event_t* e) {
     if (code == LV_EVENT_PRESSED) {
         long_press_handled = false;
     } else if (code == LV_EVENT_LONG_PRESSED) {
+        if (!devices[idx].dimmable) return;
         long_press_handled = true;
         openBrightness(idx);
     } else if (code == LV_EVENT_CLICKED) {
@@ -480,22 +483,30 @@ static void showList() {
         lv_obj_set_style_text_color(l, lv_color_hex(0xAAAAAA), 0);
         return;
     }
+    // Square tiles: two big ones side by side, three per row for 3+ devices, and smaller still
+    // for four or five so the second row fits on screen (with a smaller icon to leave room).
+    int w = device_count <= 2 ? TUYA_BTN_SIZE : (device_count == 3 ? TUYA_BTN_COMPACT : 86);
+    int inset = w == TUYA_BTN_SIZE ? 16 : 10;
     for (int i = 0; i < device_count; i++) {
         lv_obj_t* b = lv_button_create(cont_lights);
+        lv_obj_set_size(b, w, w);
+        lv_obj_set_style_pad_hor(b, 4, 0);
         styleDeviceButton(b, devices[i].on);
         lv_obj_add_event_cb(b, device_cb, LV_EVENT_ALL, (void*)(intptr_t)i);
 
         lv_obj_t* icon = lv_label_create(b);
-        lv_label_set_text(icon, LV_SYMBOL_POWER);
-        lv_obj_set_style_text_font(icon, &lv_font_montserrat_ext_32, 0);
-        lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 16);
+        lv_label_set_text(icon, strcmp(devices[i].switch_code, "switch_led") == 0 ? SYMBOL_LIGHTBULB : SYMBOL_PLUG);
+        lv_obj_set_style_text_font(icon, w >= TUYA_BTN_COMPACT ? &lv_font_montserrat_ext_32
+                                                               : &lv_font_montserrat_ext_18, 0);
+        lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, inset + (w >= TUYA_BTN_COMPACT ? 0 : 8));
 
         lv_obj_t* name = lv_label_create(b);
         lv_label_set_text(name, devices[i].name);
         lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
-        lv_obj_set_width(name, TUYA_BTN_SIZE - 16);
+        lv_obj_set_width(name, w - 8);
+        if (w != TUYA_BTN_SIZE) lv_obj_set_style_text_font(name, &lv_font_montserrat_ext_12, 0);
         lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -14);
+        lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -(inset - 2));
     }
 }
 
@@ -526,9 +537,14 @@ static bool fetchDeviceList(char* errOut, size_t errLen) {
     for (JsonObject d : arr) {
         if (device_count >= TUYA_MAX_DEVICES) break;
         TuyaDevice& dst = devices[device_count++];
-        const char* name = d["customName"] | (d["name"] | "Unknown");
+        // customName comes back as "" (not absent) when the device was never renamed in the app.
+        const char* name = d["customName"] | "";
+        if (!name[0]) name = d["name"] | "Unknown";
         strlcpy(dst.name, name, sizeof(dst.name));
         strlcpy(dst.id, d["id"] | "", sizeof(dst.id));
+        strlcpy(dst.switch_code, strcmp(d["category"] | "", "dj") == 0 ? "switch_led" : "switch_1",
+                sizeof(dst.switch_code));
+        dst.dimmable = false;
         dst.on = false;
         dst.colour_mode = false;
         dst.hue = 0;
@@ -559,11 +575,13 @@ static bool fetchDeviceList(char* errOut, size_t errLen) {
         int white_raw = 1000, colour_v = 1000;
         for (JsonObject s : entry["status"].as<JsonArray>()) {
             const char* code = s["code"] | "";
-            if (strcmp(code, TUYA_SWITCH_CODE) == 0) {
+            if (strcmp(code, "switch_led") == 0 || strcmp(code, "switch_1") == 0) {
+                strlcpy(devices[i].switch_code, code, sizeof(devices[i].switch_code));
                 devices[i].on = s["value"] | false;
             } else if (strcmp(code, "work_mode") == 0) {
                 devices[i].colour_mode = strcmp(s["value"] | "", "colour") == 0;
             } else if (strcmp(code, "bright_value_v2") == 0) {
+                devices[i].dimmable = true;
                 white_raw = s["value"] | 1000;
             } else if (strcmp(code, "colour_data_v2") == 0) {
                 // Comes back as a JSON *string* in status (even though commands take an object).
@@ -588,7 +606,7 @@ static bool sendToggle(int idx, bool target, char* errOut, size_t errLen) {
 
     JsonDocument body;
     JsonObject cmd = body["commands"].add<JsonObject>();
-    cmd["code"] = TUYA_SWITCH_CODE;
+    cmd["code"] = devices[idx].switch_code;
     cmd["value"] = target;
     String payload;
     serializeJson(body, payload);
@@ -604,7 +622,7 @@ static bool sendToggle(int idx, bool target, char* errOut, size_t errLen) {
 // 10..1000 and colour_data_v2 as an object {"h","s","v"} with v 0..1000, but don't say which one
 // governs brightness in which work_mode, nor whether either turns an off light on -- so this
 // follows what each code is for (colour mode -> v, everything else -> bright_value_v2) and, for a
-// light that's currently off, sends switch_led=true in the same request. Untested on hardware.
+// light that's currently off, sends its switch code (switch_led) = true in the same request.
 static bool postCommands(int idx, JsonDocument& body, char* errOut, size_t errLen) {
     char path[64];
     snprintf(path, sizeof(path), "/v1.0/iot-03/devices/%s/commands", devices[idx].id);
@@ -620,7 +638,7 @@ static bool sendBrightness(int idx, int pct, char* errOut, size_t errLen) {
     JsonArray cmds = body["commands"].to<JsonArray>();
     if (!d.on) {
         JsonObject sw = cmds.add<JsonObject>();
-        sw["code"] = TUYA_SWITCH_CODE;
+        sw["code"] = d.switch_code;
         sw["value"] = true;
     }
     JsonObject cmd = cmds.add<JsonObject>();
@@ -653,7 +671,7 @@ static bool sendColour(int idx, int hue, int pct, char* errOut, size_t errLen) {
     JsonArray cmds = body["commands"].to<JsonArray>();
     if (!d.on) {
         JsonObject sw = cmds.add<JsonObject>();
-        sw["code"] = TUYA_SWITCH_CODE;
+        sw["code"] = d.switch_code;
         sw["value"] = true;
     }
     JsonObject mode = cmds.add<JsonObject>();
@@ -728,9 +746,9 @@ void buildLights(lv_obj_t* parent) {
     // Device names can have accented letters or smart quotes the stock font doesn't have a
     // glyph for -- see CustomFonts.h. The icon label below overrides this with ext_32 anyway.
     lv_obj_set_style_text_font(cont_lights, &lv_font_montserrat_ext_14, 0);
-    lv_obj_set_style_pad_all(cont_lights, 12, 0);
-    lv_obj_set_style_pad_column(cont_lights, 16, 0);
-    lv_obj_set_style_pad_row(cont_lights, 16, 0);
+    lv_obj_set_style_pad_all(cont_lights, 8, 0);
+    lv_obj_set_style_pad_column(cont_lights, 8, 0);
+    lv_obj_set_style_pad_row(cont_lights, 8, 0);
     lv_obj_remove_flag(cont_lights, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(cont_lights, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(cont_lights, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

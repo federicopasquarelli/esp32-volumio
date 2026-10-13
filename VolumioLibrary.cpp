@@ -1,12 +1,12 @@
 #include "VolumioLibrary.h"
-#include "arduino_secrets.h"
 #include "DisplayConfig.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include "VolumioHandler.h"
 #include "CustomFonts.h"
 #include "PaginationNav.h"
+#include "VolumioApi.h"
+#include "QueueActionMenu.h"
 
 #define LIB_ROOT_URI   "music-library"
 #define LIB_PAGE_SIZE  4
@@ -62,23 +62,6 @@ static char fetch_error[32];
 static WiFiClient wifi_client;
 static HTTPClient http;
 
-static String urlEncode(const char* msg) {
-    static const char hex[] = "0123456789ABCDEF";
-    String out;
-    out.reserve(strlen(msg) * 3);
-    for (const char* p = msg; *p; p++) {
-        unsigned char c = *p;
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~' || c == '/') {
-            out += (char)c;
-        } else {
-            out += '%';
-            out += hex[c >> 4];
-            out += hex[c & 0xF];
-        }
-    }
-    return out;
-}
-
 static bool isFolderType(const char* type) {
     return strcmp(type, "song") != 0 && strcmp(type, "webradio") != 0 && strcmp(type, "track") != 0;
 }
@@ -86,8 +69,7 @@ static bool isFolderType(const char* type) {
 static void fetchTask(void*) {
     fetch_error[0] = '\0';
 
-    String url = String("http://") + SECRET_VOLUMIO_HOST + ":" + SECRET_VOLUMIO_PORT +
-                 "/api/v1/browse?uri=" + urlEncode(fetch_uri) +
+    String url = volumioUrl("browse?uri=") + urlEncode(fetch_uri) +
                  "&offset=" + String(fetch_page * LIB_PAGE_SIZE) + "&limit=" + String(LIB_PAGE_SIZE);
     http.setReuse(true);
     http.setTimeout(8000);
@@ -209,145 +191,6 @@ static void styleButton(lv_obj_t* btn) {
 
 // LVGL still sends CLICKED on release after a long press, so remember the press was consumed.
 static bool long_press_handled = false;
-static LibItem menu_item;
-static volatile bool action_menu_running = false;
-static int action_requested = 0;
-
-static void overlay_cb(lv_event_t* e) {
-    // Only taps on the dimmed background close the menu, not taps bubbling up from the panel.
-    if (lv_event_get_target_obj(e) == lv_event_get_current_target_obj(e)) lv_obj_delete_async(lv_event_get_target_obj(e));
-}
-
-enum FolderAction { ACTION_PLAY, ACTION_ADD_TO_QUEUE, ACTION_CLEAR_AND_PLAY, ACTION_UPDATE };
-
-static String baseUrl() {
-    return String("http://") + SECRET_VOLUMIO_HOST + ":" + SECRET_VOLUMIO_PORT + "/api/v1/";
-}
-
-static int postJson(const char* path, const JsonDocument& body) {
-    WiFiClient client;
-    HTTPClient req;
-    req.begin(client, baseUrl() + path);
-    req.setTimeout(8000);
-    req.addHeader("Content-Type", "application/json");
-    String payload;
-    serializeJson(body, payload);
-    int code = req.POST(payload);
-    req.end();
-    return code;
-}
-
-// Number of tracks in the queue, or -1 on failure.
-static int queueLength() {
-    WiFiClient client;
-    HTTPClient req;
-    req.begin(client, baseUrl() + "getQueue");
-    req.setTimeout(8000);
-    int len = -1;
-    if (req.GET() == HTTP_CODE_OK) {
-        JsonDocument filter;
-        filter["queue"][0]["uri"] = true;
-        JsonDocument doc;
-        if (!deserializeJson(doc, req.getStream(), DeserializationOption::Filter(filter))) len = doc["queue"].size();
-    }
-    req.end();
-    return len;
-}
-
-static void folderActionTask(void* pv) {
-    LibItem* item = (LibItem*)pv;
-
-    JsonDocument body;
-    body["service"] = item->service;
-    body["uri"] = item->uri;
-    body["title"] = item->title;
-
-    switch (action_requested) {
-        case ACTION_ADD_TO_QUEUE:
-            postJson("addToQueue", body);
-            break;
-        case ACTION_CLEAR_AND_PLAY: {
-            // Sent both flat and wrapped in "item" so either body shape is understood.
-            JsonDocument wrapped = body;
-            wrapped["item"] = body;
-            postJson("replaceAndPlay", wrapped);
-            break;
-        }
-        case ACTION_PLAY: {
-            // No REST "add and play": queue the folder, then play its first track.
-            int first = queueLength();
-            if (first >= 0 && postJson("addToQueue", body) > 0) {
-                WiFiClient client;
-                HTTPClient req;
-                req.begin(client, baseUrl() + "commands/?cmd=play&N=" + String(first));
-                req.setTimeout(8000);
-                req.GET();
-                req.end();
-            }
-            break;
-        }
-    }
-
-    delete item;
-    action_menu_running = false;
-    vTaskDelete(NULL);
-}
-
-static void startAction(int action, const LibItem& item) {
-    if (action_menu_running) return;
-    action_requested = action;
-    action_menu_running = true;
-    xTaskCreatePinnedToCore(folderActionTask, "LibAction", 8192, new LibItem(item), 1, NULL, 1);
-}
-
-static void menu_action_cb(lv_event_t* e) {
-    int action = (int)(intptr_t)lv_event_get_user_data(e);
-    if (action == ACTION_UPDATE) {
-        // Volumio has no REST route for a database update, so this one uses the WebSocket.
-        updateFolder(menu_item.uri);
-    } else {
-        startAction(action, menu_item);
-    }
-    // The overlay is the panel's parent.
-    lv_obj_t* overlay = lv_obj_get_parent(lv_obj_get_parent(lv_event_get_target_obj(e)));
-    lv_obj_delete_async(overlay);
-}
-
-static void showContextMenu(const LibItem& item) {
-    menu_item = item;
-
-    lv_obj_t* overlay = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(overlay, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_radius(overlay, 0, 0);
-    lv_obj_set_style_border_width(overlay, 0, 0);
-    lv_obj_set_style_bg_color(overlay, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(overlay, LV_OPA_70, 0);
-    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(overlay, overlay_cb, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t* menu = lv_list_create(overlay);
-    lv_obj_set_size(menu, 240, LV_SIZE_CONTENT);
-    lv_obj_center(menu);
-    // Jitter on the resistive touch would otherwise start a scroll and cancel the button click.
-    lv_obj_remove_flag(menu, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(menu, 0, 0);
-    lv_obj_set_style_pad_row(menu, 0, 0);
-    lv_obj_set_style_bg_color(menu, lv_color_hex(0x111111), 0);
-    lv_obj_set_style_text_color(menu, lv_color_hex(0xAAAAAA), 0);
-    lv_obj_set_style_text_font(menu, &lv_font_montserrat_ext_14, 0);
-
-    lv_obj_t* title = lv_list_add_text(menu, item.title);
-    lv_label_set_long_mode(title, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_width(title, 224);
-
-    static const char* icons[] = { LV_SYMBOL_PLAY, LV_SYMBOL_PLUS, LV_SYMBOL_TRASH, LV_SYMBOL_REFRESH };
-    static const char* names[] = { "Play", "Add to queue", "Clear and play", "Update folder" };
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t* b = lv_list_add_button(menu, icons[i], names[i]);
-        styleButton(b);
-        lv_obj_add_event_cb(b, menu_action_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
-    }
-}
 
 static void item_cb(lv_event_t* e) {
     lv_event_code_t code = lv_event_get_code(e);
@@ -358,7 +201,7 @@ static void item_cb(lv_event_t* e) {
         long_press_handled = false;
     } else if (code == LV_EVENT_LONG_PRESSED) {
         long_press_handled = true;
-        showContextMenu(items[idx]);
+        showQueueActionMenu(items[idx].title, items[idx].uri, items[idx].service, true);
     } else if (code == LV_EVENT_CLICKED) {
         if (long_press_handled) long_press_handled = false;
         else enterFolder(items[idx].uri);
@@ -367,7 +210,7 @@ static void item_cb(lv_event_t* e) {
 
 static void track_cb(lv_event_t* e) {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (idx >= 0 && idx < item_count) startAction(ACTION_PLAY, items[idx]);
+    if (idx >= 0 && idx < item_count) startQueueAction(QUEUE_PLAY, items[idx].service, items[idx].uri, items[idx].title);
 }
 
 // items[] only ever holds the page just fetched (server-side offset/limit already did the
