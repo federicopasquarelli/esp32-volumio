@@ -10,7 +10,7 @@ WebSocketsClient ws;
 // DNS/mDNS lookup of volumio.local plus up to 5s of TCP timeout) on the caller's own thread --
 // here the Arduino loop(), which also runs LVGL and the touch reader. With the Raspberry off
 // that meant a multi-second freeze every half second, so the whole UI, including the dropdown
-// to reach Library/Queue/Lights, was effectively dead. loopVolumio() therefore only lets
+// to reach Library/Queue/Artists, was effectively dead. loopVolumio() therefore only lets
 // ws.loop() run when the socket is already connected, or when this probe has just confirmed
 // Volumio is accepting connections (so the connect it makes will be quick). The probe is what
 // eats the blocking time now, on its own task, where it can't hurt anything.

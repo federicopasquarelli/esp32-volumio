@@ -5,7 +5,7 @@
 
 // Registers the Library screen's container. Its widgets are no longer built here -- wire
 // buildLibrary()/refreshLibrary()/hideLibrary() as addScreen()'s on_build/on_show/on_hide (see
-// arduino32.ino) so they're built and fetched only the first time the screen is actually shown.
+// esp32-volumio.ino) so they're built and fetched only the first time the screen is actually shown.
 void setupLibrary(lv_obj_t* parent_tab);
 // Builds the Library screen's widgets into parent. Wire as addScreen()'s on_build.
 void buildLibrary(lv_obj_t* parent);

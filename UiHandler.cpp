@@ -271,7 +271,7 @@ static void addMenuAction(const char* label, const MenuAction* action) {
 // Adds the Update DB/Restart/Shut down tiles to the end of the menu grid. Must be called once, after every
 // addScreen()/addHiddenScreen() in setup() has already run its addMenuEntry() -- setupUI() itself
 // runs before any of those (it's what creates menu_grid in the first place), so if these were
-// added from inside setupUI() they'd land first, not last. Calling this from arduino32.ino's
+// added from inside setupUI() they'd land first, not last. Calling this from esp32-volumio.ino's
 // setup(), after the last addScreen(), is what makes them require scrolling past the rest of the
 // menu to reach, instead of being pinned in their own fixed row below it (the previous behavior).
 void addSystemMenuActions() {

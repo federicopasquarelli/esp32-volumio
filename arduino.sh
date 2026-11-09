@@ -11,7 +11,7 @@
 # - The ESP32 core installed is pinned to esp32:esp32@3.3.11. Do NOT upgrade to
 #   4.0.0-alpha1 -- its TLS stack is broken (every HTTPS handshake fails, including to
 #   unrelated hosts like google.com; see CLAUDE.md's TLS quirk). If a future `arduino-cli
-#   core upgrade` silently pulls the alpha, HTTPS (Tuya Lights) will break with no
+#   core upgrade` silently pulls the alpha, any HTTPS code will break with no
 #   obvious cause -- check `arduino-cli core list` first if that ever happens.
 # - The serial port is normally NOT free. The user runs Arduino IDE with its own Serial
 #   Monitor attached to /dev/ttyUSB0 most of the time. `upload` and `monitor` both need

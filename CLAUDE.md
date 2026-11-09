@@ -18,8 +18,7 @@ Board used for testing: connected via USB at `/dev/ttyUSB0` (CH341 adapter), FQB
 with `PartitionScheme=huge_app` or it'll fail to fit. ESP32 core: pinned to **`esp32:esp32@3.3.11`**
 — do not upgrade to the `4.0.0-alpha1` core, its TLS stack is broken (see quirks below).
 
-Volumio host for dev: `volumio.local:3000`. Tuya Developer Platform credentials (client ID/key)
-also live in `arduino_secrets.h`, gitignored.
+Volumio host for dev: `volumio.local:3000`.
 
 ## Hardware
 
@@ -36,16 +35,15 @@ also live in `arduino_secrets.h`, gitignored.
 
 ## Credentials / secrets
 
-WiFi, Volumio and Tuya settings live in `arduino_secrets.h`, which is **gitignored**. To set up a
+WiFi and Volumio settings live in `arduino_secrets.h`, which is **gitignored**. To set up a
 local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`, `SECRET_PASS`,
-`SECRET_TIMEZONE`, `SECRET_VOLUMIO_HOST`, `SECRET_VOLUMIO_PORT`, `SECRET_TUYA_CLIENT_ID`,
-`SECRET_TUYA_CLIENT_KEY`. Never commit real values or paste them into other files.
+`SECRET_TIMEZONE`, `SECRET_VOLUMIO_HOST`, `SECRET_VOLUMIO_PORT`. Never commit real values or paste them into other files.
 
 ## File map
 
 - [arduino.sh](arduino.sh) — **use this to build/flash** (`compile`, `flash`, `port-check`, `clean`, …)
   instead of raw `arduino-cli`; it already has the huge_app FQBN and port baked in.
-- [arduino32.ino](arduino32.ino) — `setup()`/`loop()`, wires all modules together.
+- [esp32-volumio.ino](esp32-volumio.ino) — `setup()`/`loop()`, wires all modules together.
 - [LvglHandler.cpp](LvglHandler.cpp) — display flush + touch read callbacks, LVGL init. Also owns
   the screen-timeout/backlight-off-after-30-seconds logic and wake-on-touch.
 - [TouchHandler.cpp](TouchHandler.cpp) — XPT2046 touch reading, noise filtering.
@@ -89,20 +87,10 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   see item 31.
 - [DisplayConfig.h](DisplayConfig.h) — pins, screen dims, shared constants (`COLOR_ACCENT`,
   `TOP_BAR_H`, `SCREEN_TIMEOUT_MS`).
-- [CustomFonts.h](CustomFonts.h) + `src/fonts/font_montserrat_ext_{12,14,18,32}.c` — Montserrat fonts
+- [CustomFonts.h](CustomFonts.h) + `src/fonts/font_montserrat_ext_{12,14,18}.c` — Montserrat fonts
   regenerated with a wider glyph range than LVGL's stock ones (accented letters, smart
   punctuation); see the quirks section below for why these exist and how to regenerate/resize
   them.
-- [TuyaLights.cpp](TuyaLights.cpp) — "Lights" screen (dropdown entry, via `addScreen`).
-  Authenticates against the Tuya Cloud API (`openapi.tuyaeu.com`, Simple mode signing), lists up
-  to 5 devices (`/v2.0/cloud/thing/device?page_size=5`) with their live switch state fetched in a
-  single batch call (`GET .../status?device_ids=...`, code `switch_led` -- item 29), and tapping
-  one toggles it (`POST .../commands`); long-pressing one opens a hidden per-light brightness page
-  (slider + colour palette + Back button). No unlink/remove action, by design. Both the main list
-  and the brightness page are lazy-built/freed (item 29): `buildLights()`/`refreshTuyaLights()`/
-  `hideLights()` and `buildBrightnessPage()`/`refreshBrightnessPage()`/`hideBrightnessPage()`.
-  `tuyaRequest()`'s `WiFiClientSecure`/`HTTPClient` are kept alive across calls (item 29) instead
-  of a fresh TLS handshake every time.
 
 ## Session history (chronological, most recent last)
 
@@ -152,19 +140,8 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
    from Library/Queue too, not just the player), centered between the clock and the dropdown/back
    button. Getting the elapsed time itself to tick correctly took a few tries — see the timer
    quirk below.
-10. **Tuya Lights screen started.** Added an empty "Lights" screen + dropdown entry
-    (`TuyaLights.cpp`), then implemented Tuya Cloud API authentication (`GET
-    /v1.0/token?grant_type=1`, HMAC-SHA256 "Simple mode" signing per Tuya's docs) on screen-open.
-    Signing was correct from the start; what actually blocked it was the ESP32 core version — see
-    the TLS quirk below. Downgraded the installed core from `esp32:esp32@4.0.0-alpha1` to the
-    stable `@3.3.11` to fix it. Once auth worked, added the device list
-    (`/v2.0/cloud/thing/device?page_size=5`), then on/off control: the list endpoint turned out to
-    have no live status, so each device's switch state is fetched separately
-    (`GET /v1.0/iot-03/devices/{id}/status`, code `switch_led` -- confirmed by calling the real
-    API read-only from a throwaway script rather than trusting Tuya's docs, which were
-    inconsistently rendered when fetched). Tapping a row sends
-    `POST /v1.0/iot-03/devices/{id}/commands` with that same code and updates the row from the
-    response, not optimistically.
+10. **Tuya Lights screen** (smart-bulb control via the Tuya Cloud API) was added here. Removed in item 42; the TLS quirk below was found while building it.
+
 11. **Library switched from "fetch whole folder" to "fetch per page."** Chasing the TLS memory
     failure above (`SSL - Memory allocation failed`, 13.8KB largest free block vs the ~32KB TLS
     needs) surfaced that `VolumioLibrary.cpp` reserved a static 200-item array (~49KB) at boot,
@@ -176,39 +153,21 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     old total-based `pageCount()` for enabling the Next button — this was a false positive right
     when a folder's item count was an exact multiple of 4 (Next loaded one harmless empty page).
     **Fixed properly later, see item 25.**
-12. **Lights UI**: devices became two big (130x130) centered buttons instead of list rows —
-    accent-filled when on, black with an accent border when off (same on/off language as the
-    player's shuffle/repeat buttons, `styleDeviceButton` in `TuyaLights.cpp`). Tapping a light
-    while another request is still in flight no longer drops the tap: it's queued
-    (`pending_index`) and fires automatically once the in-flight one finishes, so flipping two
-    lights in quick succession doesn't need a second tap — but it's still one request at a time on
-    purpose (this core's TLS needs a big contiguous heap block, see the TLS quirk below).
+12. **Lights UI** tweaks (Tuya, removed in item 42).
+
 13. **Back button removed.** The dropdown menu button is now always visible on every screen (used
     to be player-only, with a Back button replacing it everywhere else) so you can jump straight
     between Library/Queue/Lights without detouring through the player. The player itself got a
     "Player" entry in the dropdown (`addMenuEntry()` in `UiHandler.cpp`, added right after
     `cont_player` in `setupUI()`) to replace what Back used to do.
-14. **Tuya token refresh.** Access tokens last 2h; `TuyaLights.cpp` now holds onto the
-    `refresh_token` from login and, once the cached access token is stale, calls
-    `GET /v1.0/token/{refresh_token}` (no `grant_type`, no `access_token` header) instead of
-    logging in from scratch — falling back to a full login only if that fails. Tuya's refresh
-    tokens are single-use, so every response (login or refresh) overwrites the stored one.
-    Separately, every authenticated call now goes through `tuyaCall()`, which retries once with a
-    forced-fresh token if Tuya answers with HTTP 401 — a safety net for a token going stale
-    between calls, not the main renewal path (that's `ensureToken()`'s expiry check, which is why
-    opening the Lights screen normally makes zero auth calls at all).
+14. **Tuya token refresh** (removed in item 42).
+
 15. **All `Serial.*` logging removed project-wide** (including `Serial.begin()`), per explicit
     request. If you need runtime visibility again — e.g. to debug a new Tuya failure mode — you'll
     need to re-add both. It was added back a few times while chasing memory bugs (items 25, 28,
     29) and removed again each time: none is in the code now.
-16. **Tuya pre-auth at boot.** `startTuyaAuth()` runs the login in the background right after
-    `setup()`'s WiFi/NTP work (placed last, so NTP has had a moment to sync -- signing needs a
-    roughly-correct clock), so opening the Lights screen for the first time only pays for the
-    device list/status calls, not a login too. Uses the same single-in-flight task machinery as
-    everything else in `TuyaLights.cpp` (`fetching`/`current_op = OP_AUTH`) rather than a separate
-    path, and if the screen is opened while that pre-auth is still running, the resulting list
-    refresh isn't dropped -- it's queued (`pending_list_refresh`) and runs right after, same
-    pattern as the existing queued-toggle (`pending_index`).
+16. **Tuya pre-auth at boot** (removed in item 42).
+
 17. **Album art, second attempt: also built, also reverted.** Not in the codebase now — kept here
     so a third attempt doesn't repeat the same dead ends. This time the URL came from Volumio's
     own pushState `albumart` field (verified live against the instance -- `curl
@@ -263,39 +222,7 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     `setup()` still blocks forever in `while (WiFi.status() != WL_CONNECTED)` if *WiFi* itself
     is unavailable.
 
-20. **Per-light brightness page** (long-press a light on the Lights screen). A hidden screen — new
-    `addHiddenScreen()` in `UiHandler.cpp`, registered like `addScreen()` but with no dropdown
-    entry, plus `showScreen()` now exported so `TuyaLights.cpp` can navigate to/from it — holding
-    the light's name, a big percent readout, a thick slider and a Back button. Long-press vs tap
-    uses the same `PRESSED`/`LONG_PRESSED`/`CLICKED` + `long_press_handled` pattern as Library
-    (LVGL still sends CLICKED on release after a long press). The slider only sends a command on
-    release (`RELEASED`/`PRESS_LOST`), not per drag step, and goes through the same
-    one-request-at-a-time queue (`pending_bright_index`, last release wins). Back redraws the
-    Lights list from local state (`returning_from_brightness`) instead of reloading over the
-    network, since `showScreen()` would otherwise fire `refreshTuyaLights()` (the Lights screen's
-    `on_show`). What the API is, per Tuya's official docs (standard instruction set for lights,
-    category `dj`) and this project's two Extrastar A60 bulbs' own `/specifications`:
-    `bright_value_v2` is an integer 10..1000; `colour_data_v2` is sent as an **object**
-    `{"h","s","v"}` (h 0..360, s/v 0..1000) even though status returns it as a JSON *string*;
-    `work_mode` is `white`/`colour`/`scene`/`music`. **The docs do not say** which code governs
-    brightness in which mode, nor whether either turns an off light on, so `sendBrightness()`
-    follows what each code is for (colour mode → `colour_data_v2.v` with h/s resent unchanged,
-    otherwise `bright_value_v2`; slider percent × 10 either way) and, for a light that's off, adds
-    `switch_led: true` to the same request. **Confirmed on hardware** (brightness and colour
-    both work). Also: while researching this, same-value
-    writes (bright/colour set to their current values, lights off, state read back unchanged)
-    were sent to the real bulbs to check the request format was accepted — the user preferred
-    working from the official docs, so don't probe live devices with commands again unasked.
-    **Colour palette + thinner slider (follow-up):** the page also has twelve round swatches (eleven
-    full-saturation hues plus white, two rows of six, 12px apart) that change the light's colour, and the
-    slider went from 18px to 8px tall (knob padded out to stay grabbable). The header row now
-    holds Back, the name and the big percent readout. A swatch sends `work_mode` explicitly
-    (`colour`, or `white`) together with `colour_data_v2 {h, s:1000, v: slider*10}` (white:
-    `bright_value_v2` instead), plus `switch_led: true` if the light is off — the docs are silent
-    on whether `colour_data_v2` alone switches a white-mode bulb over, so it doesn't rely on that.
-    Goes through the same single-in-flight queue (`pending_colour_*`, last tap wins; runs after a
-    pending brightness). The selected swatch (white border) follows the light's real state and
-    snaps back if a command fails. Confirmed on hardware.
+20. **Per-light brightness/colour page** (Tuya, removed in item 42). It introduced `addHiddenScreen()` and the exported `showScreen()` in `UiHandler.cpp`, which ArtistTracks still uses.
 
 21. **Menu is now a full-screen overlay.** The old 150px dropdown panel under the toggle became
     `menu_list` in `UiHandler.cpp`: a 320x240 opaque overlay (covers the header too) with a "Menu"
@@ -443,7 +370,7 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     absolute `x`/fixed-`y` positioning and now creates its tile inside `menu_grid` (flex-wrap
     placement, same as `addMenuEntry()`'s). The two calls that used to run from inside `setupUI()`
     (before any screen had registered its own tile) moved into a new exported
-    `addSystemMenuActions()`, called once from `arduino32.ino`'s `setup()` **after** every
+    `addSystemMenuActions()`, called once from `esp32-volumio.ino`'s `setup()` **after** every
     `addScreen()`/`addHiddenScreen()` -- calling it any earlier would put these two first, not
     last, since `setupUI()` (which creates `menu_grid`) runs before any of the sketch's own
     `addScreen()` calls. `menu_grid`'s height also grew from a fixed two-row `138` to
@@ -631,7 +558,7 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
       `refreshArtistTracks()`/`hideArtistTracks()` are `addHiddenScreen()`'s on_build/on_show/
       on_hide, `loopArtistTracks()` has the same torn-down-widgets discard guard every other
       screen's loop function has, and `setupArtistTracks(artistsScreen, tracksScreen)` stores the
-      Artists screen reference Back needs (`arduino32.ino` passes `addScreen("Artists", ...)`'s
+      Artists screen reference Back needs (`esp32-volumio.ino` passes `addScreen("Artists", ...)`'s
       own return value straight into it). Unlike Library's "remember position across a hide,"
       `openArtistTracks()` always resets to page 0 -- opening this screen is always a fresh
       navigation to whichever artist was just tapped (possibly a different one each time), not a
@@ -656,17 +583,7 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     artist entries from `artists://` don't carry their own `service` field the way folder/track
     items do.
 
-33. **Lights lost their initial on/off state, and the brightness slider stopped working -- both
-    from item 29's batch status call.** Checked live: `/v1.0/iot-03/devices/status?device_ids=...`
-    works and has the expected shape, but it's the only Tuya response big enough (~2.6KB) to come
-    back `Transfer-Encoding: chunked` (list/per-device/command responses all carry a
-    `Content-Length`). `tuyaRequest()` fed `http.getStream()` straight into `deserializeJson()`,
-    which then saw the raw chunk-size lines and failed; `fetchDeviceList()` ignores a failed status
-    lookup on purpose, so every light silently stayed at its defaults (off, white mode, 100%). The
-    slider then sent `bright_value_v2` to a bulb actually in colour mode, which changes nothing
-    visible. Fixed by reading the body with `http.getString()` (which decodes chunked) before
-    parsing. Confirmed on hardware. Any Tuya response that grows past a couple of KB can come back
-    chunked, so never parse `getStream()` directly here.
+33. **Tuya status-call fix** (chunked responses; removed in item 42).
 
 34. **Queue didn't load for long queues: `getQueue` has no server-side pagination.** Checked live
     (330-item queue): `/api/v1/getQueue` ignores `offset`/`limit`, `start`/`count` and `page`
@@ -732,21 +649,7 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     second skipped redrawing the time label (`last_displayed_elapsed` reset on duration change).
     Confirmed on hardware.
 
-40. **Smart switch support on the Lights screen (3+ tiles).** A Tuya smart switch (category `cz`,
-    "Smart Switch") joined the two bulbs. Checked read-only against the live API: its on/off code
-    is `switch_1`, not `switch_led`, and its `customName` comes back as `""` (not absent), so the
-    tile had no label (`d["customName"] | ...` returns the empty string) and toggling sent a code
-    it doesn't have. Each `TuyaDevice` now stores its own `switch_code` (from its status, falling
-    back to `switch_led` for category `dj` and `switch_1` otherwise) and `dimmable` (has
-    `bright_value_v2`). Long-press only opens the brightness page for dimmable devices. With 3+
-    devices the square tiles shrink to 96x96 (three per row, 12px name font), and 4-5 devices to
-    86x86 with an 18px power icon instead of 32px, so the second row fits. The old 130px tiles only fit two per row, so a
-    third wrapped onto a row below the screen. Tile icons: a bulb for `switch_led` devices, a plug
-    for everything else -- FontAwesome U+F0EB/U+F1E6 (`SYMBOL_LIGHTBULB`/`SYMBOL_PLUG` in
-    `CustomFonts.h`), added to the ext_18/ext_32 fonts by rerunning each file's `Opts:` command
-    with the two code points appended. Current `lv_font_conv` writes an
-    `#include "lvgl/lvgl.h"` block that doesn't build here -- swap it back to `#include <lvgl.h>`
-    after regenerating. Untested on hardware.
+40. **Smart switch support on the Lights screen** (Tuya, removed in item 42).
 
 41. **Waking the screen always shows the player.** When the backlight turns off (item 7),
     `loopLVGL()` calls `showPlayer()` (`UiHandler.cpp`), which hides the menu and its confirm
@@ -755,6 +658,14 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     screen you were on, so its in-flight-fetch guards (item 29) apply. It switches at sleep, not at
     wake, so the old screen never shows for a moment after waking. Untested on hardware.
 
+42. **Lights (Tuya) feature removed, project renamed `arduino32` -> `esp32-volumio`.** The repo
+    is going public and Volumio-only: `TuyaLights.cpp/.h`, the 32px font (only Lights used it),
+    `SYMBOL_LIGHTBULB`/`SYMBOL_PLUG`, `DISPLAY_BYTE_SWAPPED` and the `SECRET_TUYA_*` settings are
+    gone. The bulb/plug glyphs are still compiled into `font_montserrat_ext_18.c` (two unused
+    glyphs, not worth regenerating for). The sketch is now `esp32-volumio.ino`, matching the
+    folder name as the Arduino toolchain requires. Older items mentioning Tuya/Lights describe
+    removed code.
+
 - **LVGL's compiled-in fonts are ASCII-only** — the stock Montserrat fonts (`lv_conf.h`, shared,
   outside this repo) only cover code points 32-126 plus LVGL's own icon symbols (checked directly
   in the compiled font source, `lv_font_montserrat_18.c`'s `cmaps[]`). No curly quotes, en/em
@@ -762,20 +673,17 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   album, library/queue item names, from properly-tagged files) — which then rendered as a
   missing-glyph box on screen. First fixed with a text-rewriting workaround
   (`sanitizeText()`, rewriting smart punctuation to ASCII lookalikes), then replaced with the
-  actual fix: `CustomFonts.h` declares 4 regenerated Montserrat fonts
-  (`lv_font_montserrat_ext_{12,14,18,32}`, in `src/fonts/font_montserrat_ext_*.c`) with the glyph range
+  actual fix: `CustomFonts.h` declares 3 regenerated Montserrat fonts
+  (`lv_font_montserrat_ext_{12,14,18}`, in `src/fonts/font_montserrat_ext_*.c`) with the glyph range
   extended to Latin-1 Supplement (accented letters) plus the specific smart-punctuation code
   points, built with `lv_font_conv` (`npx lv_font_conv`) from the exact same source LVGL's own
   bundled fonts use (`lvgl/scripts/generators/built_in_font/Montserrat-Medium.ttf` +
   `built_in_font_gen.py`'s icon-symbol list), so they're visually identical to the stock fonts,
   just with more glyphs. Together they're about 70KB of flash in the binary. The dash range is the
   whole U+2010-2015 block plus U+2212 (minus), not just en/em dash: Volumio metadata turned out to
-  use U+2012 (figure dash, e.g. a title "15‒38"), which rendered as nothing. **Exception: the 32px
-  font is subset to just digits, `%`, space, `LV_SYMBOL_POWER` and the bulb/plug icons** (all it
-  renders: the Lights tile icons and the brightness readout), which cut it from 68KB to about 3KB -- regenerate it with
-  more glyphs (command in the file's header) before using it for any other text. Every `&lv_font_montserrat_NN` reference in the code was
+  use U+2012 (figure dash, e.g. a title "15‒38"), which rendered as nothing. Every `&lv_font_montserrat_NN` reference in the code was
   swapped for `&lv_font_montserrat_ext_NN`, and every list/container showing external metadata
-  (`list_library`, `list_queue`, the Library long-press context menu, `cont_lights`) got an
+  (`list_library`, `list_queue`, the Library long-press context menu) got an
   explicit `lv_obj_set_style_text_font(..., &lv_font_montserrat_ext_14, 0)` so children inherit it
   instead of falling back to `LV_FONT_DEFAULT` (still the stock, ASCII-only montserrat_14).
 - **Don't gate a UI value that needs to "tick" on its own periodic timer** if it's meant to be
@@ -809,11 +717,8 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   (black/white unaffected; `0x1DB954` → RGB565 `0x1DCA` → seen as `0xCA1D` ≈ violet; greys get
   tinted too). The one-line fix would be `draw16bitRGBBitmap()`, but the user is fine with the
   current look and the accent choice downstream assumes it, so it hasn't been touched — don't
-  "fix" it without asking. Anything where the *actual* colour matters has to compensate instead:
-  `DISPLAY_BYTE_SWAPPED` in `DisplayConfig.h` + `panelColor()` in `TuyaLights.cpp` pre-swap the
-  colour palette's swatches. **If the flush is ever fixed, set `DISPLAY_BYTE_SWAPPED` to 0** or
-  the palette goes wrong. This diagnosis is from reading the code, not from measuring the
-  panel — if the palette swatches look off on the device, this is the first place to check.
+  "fix" it without asking. Anything where the *actual* colour matters has to pre-swap its colours to
+  compensate. This diagnosis is from reading the code, not from measuring the panel.
 - **Serial port**: the user runs Arduino IDE with its own Serial Monitor attached to
   `/dev/ttyUSB0` most of the time. Don't kill that process to grab the port without asking first
   — did this once already and it was disruptive. If you need serial output, either ask the user
@@ -835,7 +740,7 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   the *link* step with `undefined reference to setup()/loop()` and no compile error for any
   source file — deleting the local `build/` dir (`./arduino.sh clean`) and even the ESP32 core's
   own cache (`~/.cache/arduino/cores/...`) didn't fix it. `--verbose` showed why: `Using
-  previously compiled file: .../sketch/arduino32.ino.cpp.o` — a stale/corrupt cached object for
+  previously compiled file: .../sketch/esp32-volumio.ino.cpp.o` — a stale/corrupt cached object for
   the sketch itself (not a library) was being relinked instead of rebuilt. Root cause not
   confirmed (never reproduced from a clean state), but the timing lines up with two
   `arduino-cli compile` calls having overlapped shortly before (one from this session backgrounded
