@@ -6,7 +6,6 @@
 #include "VolumioQueue.h"
 #include "VolumioArtists.h"
 #include "VolumioArtistTracks.h"
-#include "TuyaLights.h"
 #include <WiFi.h>
 #include "arduino_secrets.h"
 void setup() {
@@ -24,8 +23,6 @@ void setup() {
     lv_obj_t* artistsScreen = addScreen("Artists", buildArtists, refreshArtists, hideArtists);
     setupArtistTracks(artistsScreen,
                        addHiddenScreen(buildArtistTracks, refreshArtistTracks, hideArtistTracks));
-    setupTuyaLights(addScreen("Lights", buildLights, refreshTuyaLights, hideLights),
-                     addHiddenScreen(buildBrightnessPage, refreshBrightnessPage, hideBrightnessPage));
     // Must come after every addScreen() above -- it appends Update DB/Restart/Shut down as the
     // grid's last tiles, so they land after all of these instead of wherever setupUI() itself ran.
     addSystemMenuActions();
@@ -33,11 +30,6 @@ void setup() {
     while (WiFi.status() != WL_CONNECTED) delay(100);
     configTzTime(SECRET_TIMEZONE, "pool.ntp.org");
     setupVolumio();
-    // Placed last so NTP (configTzTime above) has had a moment to sync in the background --
-    // Tuya's request signing needs a roughly-correct clock. Still done eagerly at boot (unlike
-    // the screens above) since it's just a small transient token refresh, not a widget tree or a
-    // large permanent buffer -- see CLAUDE.md item 29.
-    startTuyaAuth();
 }
 void loop() {
     loopLVGL();
@@ -46,7 +38,6 @@ void loop() {
     loopQueue();
     loopArtists();
     loopArtistTracks();
-    loopTuyaLights();
     static unsigned long last_clock = 0;
     if (millis() - last_clock > 1000) {
         updateTime();
