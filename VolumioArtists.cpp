@@ -184,18 +184,10 @@ void buildArtists(lv_obj_t* parent) {
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(parent, 0, 0);
 
-    list_artists = lv_list_create(parent);
-    lv_obj_set_size(list_artists, LV_PCT(100), ARTISTS_ROW_H * ARTISTS_PAGE_SIZE);
-    lv_obj_align(list_artists, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_remove_flag(list_artists, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(list_artists, 0, 0);
-    lv_obj_set_style_pad_row(list_artists, 0, 0);
-    lv_obj_set_style_bg_color(list_artists, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_border_width(list_artists, 0, 0);
-    lv_obj_set_style_text_color(list_artists, lv_color_hex(0xAAAAAA), 0);
-    // Artist names come straight from file tags, which often have accented letters the stock font
-    // has no glyph for -- see CustomFonts.h.
-    lv_obj_set_style_text_font(list_artists, &lv_font_montserrat_ext_14, 0);
+    // Title row, the list and the page bar (see LIST_BODY_H).
+    addListTitle(createListHeader(parent, LIST_HEADER_H), "Artists");
+
+    list_artists = createList(parent);
 
     lv_obj_t* bar = lv_obj_create(parent);
     lv_obj_set_size(bar, LV_PCT(100), ARTISTS_ROW_H);

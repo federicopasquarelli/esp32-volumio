@@ -77,8 +77,13 @@ Engine.IO v3), plain HTTP for on-demand requests (browsing, queue).
   [VolumioArtistTracks.cpp](VolumioArtistTracks.cpp), [VolumioQueue.cpp](VolumioQueue.cpp): the
   list screens.
 - [PaginationNav.cpp](PaginationNav.cpp): the bottom-bar buttons and page label every list uses.
-- [ListStyle.cpp](ListStyle.cpp): `styleListRow()`/`styleListText()`, the row look of every list.
-  **New lists should use both.**
+- [ListStyle.cpp](ListStyle.cpp): `styleListRow()`/`styleListText()`, the row look of every list,
+  `createList()`, and `createListHeader()`/`addListTitle()`, the title row above it. **New lists
+  should use all of them.** Every list screen is a `LIST_HEADER_H` (28px) title row, the list filling
+  `LIST_BODY_H` and a 34px page bar aligned to the bottom. Create the list with `createList()`:
+  the default theme gives lists a radius plus `clip_corner`, which cut the corners off whichever
+  row touches the list's top or bottom edge (it looked like the first or last item was cut). A
+  back/up button that can't be used is hidden, not disabled.
 - [CustomFonts.h](CustomFonts.h) + `src/fonts/`: Montserrat with a wider glyph range, see below.
 
 ## Architecture
@@ -172,6 +177,11 @@ No PSRAM: LVGL's pool, static data, WiFi and the network stack share ~320KB of S
   transitions until the pool ran out. `createPagerButton()` calls `lv_obj_remove_style_all()`, then
   sets size (a style property, so it must come after) and radius. Do the same for any button
   whose state flips often.
+- **Per-row widgets add up fast.** The queue's ▲/▼/× (12 per page) started as themed buttons
+  with a child label and per-object local styles in three states; opening the menu from Queue
+  then froze the UI half-redrawn (the pool assert). They're now one clickable label each sharing
+  three static `lv_style_t`s. For anything repeated per row: shared styles, no child labels, and
+  no `lv_obj_set_ext_click_area()` (it allocates the object's extra attributes).
 - **The static DRAM segment (`dram0_0_seg`) is nearly full.** An 8KB or 12.8KB `static` array
   overflows it at link time. Default to `malloc()` for buffers over a few KB (the display buffer
   is heap-allocated for this reason).

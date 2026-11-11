@@ -198,26 +198,53 @@ static void move_cb(lv_event_t* e) {
     startOp(OP_REFRESH_DELAYED);
 }
 
-// A small accent button inside a row. remove_style_all() drops the theme's press transitions,
-// which pile up in LVGL's pool under fast taps (see CLAUDE.md, Memory).
+// The ▲/▼/× buttons: 12 per page, so they're kept as light as possible in LVGL's pool, which ran out
+// (UI frozen mid-redraw) when they were themed buttons with their own local styles. Each is one
+// clickable label (no button + label pair) and all of them share three static styles. Labels get
+// no theme styles, so there are no press transitions to pile up either (see CLAUDE.md, Memory).
+#define ROW_BTN_W 30
+#define ROW_BTN_H (QUEUE_ROW_H - 8)
+static lv_style_t style_row_btn, style_row_btn_pressed, style_row_btn_disabled;
+
+static void initRowButtonStyles() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+
+    // Match the pager buttons' corner radius, which comes from the theme.
+    lv_obj_t* probe = lv_button_create(lv_layer_sys());
+    int32_t radius = lv_obj_get_style_radius(probe, LV_PART_MAIN);
+    lv_obj_delete(probe);
+
+    lv_style_init(&style_row_btn);
+    lv_style_set_width(&style_row_btn, ROW_BTN_W);
+    lv_style_set_height(&style_row_btn, ROW_BTN_H);
+    lv_style_set_radius(&style_row_btn, radius);
+    lv_style_set_bg_opa(&style_row_btn, LV_OPA_COVER);
+    lv_style_set_bg_color(&style_row_btn, lv_color_hex(COLOR_ACCENT));
+    lv_style_set_text_color(&style_row_btn, lv_color_hex(0xFFFFFF));
+    lv_style_set_text_align(&style_row_btn, LV_TEXT_ALIGN_CENTER);
+    // A label doesn't centre its text vertically: pad it down by half the spare height.
+    lv_style_set_pad_top(&style_row_btn, (ROW_BTN_H - lv_font_get_line_height(&lv_font_montserrat_ext_14)) / 2);
+
+    lv_style_init(&style_row_btn_pressed);
+    lv_style_set_bg_color(&style_row_btn_pressed, lv_color_hex(0x19A34A));
+
+    lv_style_init(&style_row_btn_disabled);
+    lv_style_set_bg_opa(&style_row_btn_disabled, LV_OPA_TRANSP);
+    lv_style_set_text_color(&style_row_btn_disabled, lv_color_hex(0x555555));
+}
+
 static lv_obj_t* rowButton(lv_obj_t* row, const char* symbol, lv_event_cb_t cb, int arg, bool enabled) {
-    lv_obj_t* b = lv_button_create(row);
-    int32_t radius = lv_obj_get_style_radius(b, LV_PART_MAIN);
-    lv_obj_remove_style_all(b);
-    lv_obj_set_size(b, 30, QUEUE_ROW_H - 8);
-    lv_obj_set_style_radius(b, radius, 0);
-    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(0x19A34A), LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(b, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, LV_STATE_DISABLED);
-    lv_obj_set_style_text_color(b, lv_color_hex(0x555555), LV_STATE_DISABLED);
+    initRowButtonStyles();
+    lv_obj_t* b = lv_label_create(row);
+    lv_label_set_text_static(b, symbol);
+    lv_obj_add_style(b, &style_row_btn, 0);
+    lv_obj_add_style(b, &style_row_btn_pressed, LV_STATE_PRESSED);
+    lv_obj_add_style(b, &style_row_btn_disabled, LV_STATE_DISABLED);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, (void*)(intptr_t)arg);
     if (!enabled) lv_obj_add_state(b, LV_STATE_DISABLED);
-
-    lv_obj_t* l = lv_label_create(b);
-    lv_label_set_text(l, symbol);
-    lv_obj_center(l);
     return b;
 }
 
@@ -272,18 +299,10 @@ void buildQueue(lv_obj_t* parent) {
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(parent, 0, 0);
 
-    list_queue = lv_list_create(parent);
-    lv_obj_set_size(list_queue, LV_PCT(100), QUEUE_ROW_H * QUEUE_PAGE_SIZE);
-    lv_obj_align(list_queue, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_remove_flag(list_queue, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(list_queue, 0, 0);
-    lv_obj_set_style_pad_row(list_queue, 0, 0);
-    lv_obj_set_style_bg_color(list_queue, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_border_width(list_queue, 0, 0);
-    lv_obj_set_style_text_color(list_queue, lv_color_hex(0xAAAAAA), 0);
-    // Track names come straight from file tags, which often have accented letters or smart
-    // quotes the stock font doesn't have a glyph for -- see CustomFonts.h.
-    lv_obj_set_style_text_font(list_queue, &lv_font_montserrat_ext_14, 0);
+    // Title row, the list and the page bar (see LIST_BODY_H).
+    addListTitle(createListHeader(parent, LIST_HEADER_H), "Queue");
+
+    list_queue = createList(parent);
 
     lv_obj_t* bar = lv_obj_create(parent);
     lv_obj_set_size(bar, LV_PCT(100), QUEUE_ROW_H);
