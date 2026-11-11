@@ -1,4 +1,5 @@
 #include "QueueActionMenu.h"
+#include "ListStyle.h"
 #include "VolumioHandler.h"
 #include "CustomFonts.h"
 
@@ -75,26 +76,29 @@ void showQueueActionMenu(const char* title, const char* uri, const char* service
     lv_obj_remove_flag(menu, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(menu, 0, 0);
     lv_obj_set_style_pad_row(menu, 0, 0);
-    lv_obj_set_style_bg_color(menu, lv_color_hex(0x111111), 0);
+    // Black like every other list; a thin outline marks the panel's edge against the dimmed screen.
+    lv_obj_set_style_bg_color(menu, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_border_width(menu, 1, 0);
+    lv_obj_set_style_border_color(menu, lv_color_hex(0x333333), 0);
     lv_obj_set_style_text_color(menu, lv_color_hex(0xAAAAAA), 0);
     lv_obj_set_style_text_font(menu, &lv_font_montserrat_ext_14, 0);
 
+    // The title is the only row with a fill, so it reads as the menu's header.
     lv_obj_t* label = lv_list_add_text(menu, title);
+    styleListText(label);
+    lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(label, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_pad_ver(label, 8, 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_width(label, 224);
+    lv_obj_set_width(label, LV_PCT(100));
 
     static const char* icons[] = { LV_SYMBOL_PLAY, LV_SYMBOL_PLUS, LV_SYMBOL_TRASH, LV_SYMBOL_REFRESH };
     static const char* names[] = { "Play", "Add to queue", "Clear and play", "Update folder" };
     int count = with_update ? 4 : 3;
     for (int i = 0; i < count; i++) {
         lv_obj_t* b = lv_list_add_button(menu, icons[i], names[i]);
-        lv_obj_set_height(b, MENU_ROW_H);
-        lv_obj_set_style_pad_top(b, 0, 0);
-        lv_obj_set_style_pad_bottom(b, 0, 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(0x111111), 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(0x333333), LV_STATE_PRESSED);
-        lv_obj_set_style_text_color(b, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_border_color(b, lv_color_hex(0x222222), 0);
+        styleListRow(b, MENU_ROW_H);
         lv_obj_add_event_cb(b, menu_action_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
     }
 }

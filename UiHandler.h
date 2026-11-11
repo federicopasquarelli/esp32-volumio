@@ -16,16 +16,16 @@ void updateTime();
 // small logical state (current position, fetched data) so on_show can rebuild the same view
 // instead of resetting to a default. Passing on_build == NULL keeps the old always-built
 // behavior for a screen that doesn't need this.
-lv_obj_t* addScreen(const char* name, void (*on_build)(lv_obj_t* parent) = NULL,
+// icon is the menu tile's 32px icon: it must be in lv_font_montserrat_ext_32's subset
+// (CustomFonts.h).
+lv_obj_t* addScreen(const char* name, const char* icon, void (*on_build)(lv_obj_t* parent) = NULL,
                      void (*on_show)(void) = NULL, void (*on_hide)(void) = NULL);
 // Like addScreen(), but with no dropdown entry: for a sub-page only reachable from another screen
 // (via showScreen() below) rather than from the menu, e.g. a per-item detail view.
 lv_obj_t* addHiddenScreen(void (*on_build)(lv_obj_t* parent) = NULL,
                            void (*on_show)(void) = NULL, void (*on_hide)(void) = NULL);
-// Adds the Restart/Shut down tiles to the end of the dropdown menu grid. Call exactly once, after
-// every addScreen()/addHiddenScreen() the sketch will ever register, so these two land after all
-// of them and have to be scrolled to like any other overflow tile, instead of sitting in their
-// own fixed row below the grid.
+// Adds the System tile (Update library / Restart / Shut down behind it) as the menu grid's last
+// tile. Call exactly once, after every addScreen() the sketch registers.
 void addSystemMenuActions();
 // Switches to the given screen (any addScreen()/addHiddenScreen() result, or the player) the same
 // way the dropdown does: hides the others, closes the dropdown, runs its on_show.

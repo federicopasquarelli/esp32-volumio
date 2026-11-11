@@ -6,6 +6,7 @@
 #include "VolumioQueue.h"
 #include "VolumioArtists.h"
 #include "VolumioArtistTracks.h"
+#include "CustomFonts.h"
 #include <WiFi.h>
 #include "arduino_secrets.h"
 void setup() {
@@ -18,13 +19,12 @@ void setup() {
     // (on_show) follows the same lazy timing, so there's no need to pre-fetch Library/Queue here
     // at boot the way this used to (openLibraryRoot()/refreshQueue() were called explicitly
     // below; the first showScreen() to each now triggers them instead).
-    setupLibrary(addScreen("Library", buildLibrary, refreshLibrary, hideLibrary));
-    setupQueue(addScreen("Queue", buildQueue, refreshQueue, hideQueue));
-    lv_obj_t* artistsScreen = addScreen("Artists", buildArtists, refreshArtists, hideArtists);
+    setupLibrary(addScreen("Library", LV_SYMBOL_DIRECTORY, buildLibrary, refreshLibrary, hideLibrary));
+    setupQueue(addScreen("Queue", LV_SYMBOL_LIST, buildQueue, refreshQueue, hideQueue));
+    lv_obj_t* artistsScreen = addScreen("Artists", SYMBOL_USER, buildArtists, refreshArtists, hideArtists);
     setupArtistTracks(artistsScreen,
                        addHiddenScreen(buildArtistTracks, refreshArtistTracks, hideArtistTracks));
-    // Must come after every addScreen() above -- it appends Update DB/Restart/Shut down as the
-    // grid's last tiles, so they land after all of these instead of wherever setupUI() itself ran.
+    // Must come after every addScreen() above, so the System tile is the grid's last.
     addSystemMenuActions();
     WiFi.begin(SECRET_SSID, SECRET_PASS);
     while (WiFi.status() != WL_CONNECTED) delay(100);

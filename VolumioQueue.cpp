@@ -1,4 +1,5 @@
 #include "VolumioQueue.h"
+#include "ListStyle.h"
 #include "DisplayConfig.h"
 #include "VolumioHandler.h"
 #include "CustomFonts.h"
@@ -143,19 +144,11 @@ static void updateNav(bool listing) {
 
 static void setStatus(const char* text) {
     lv_obj_clean(list_queue);
-    lv_list_add_text(list_queue, text);
+    styleListText(lv_list_add_text(list_queue, text));
     updateNav(false);
 }
 
-static void styleButton(lv_obj_t* btn) {
-    lv_obj_set_height(btn, QUEUE_ROW_H);
-    lv_obj_set_style_pad_top(btn, 0, 0);
-    lv_obj_set_style_pad_bottom(btn, 0, 0);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0x111111), 0);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(btn, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_border_color(btn, lv_color_hex(0x222222), 0);
-}
+static void styleButton(lv_obj_t* btn) { styleListRow(btn, QUEUE_ROW_H); }
 
 static void item_cb(lv_event_t* e) {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
@@ -202,7 +195,7 @@ static void showList() {
         lv_obj_center(l);
     }
 
-    if (total_count == 0) lv_list_add_text(list_queue, "Queue is empty");
+    if (total_count == 0) styleListText(lv_list_add_text(list_queue, "Queue is empty"));
     updateNav(true);
 }
 
@@ -210,7 +203,7 @@ static void showError(const char* error) {
     lv_obj_clean(list_queue);
     char msg[64];
     snprintf(msg, sizeof(msg), LV_SYMBOL_WARNING " %s", error);
-    lv_list_add_text(list_queue, msg);
+    styleListText(lv_list_add_text(list_queue, msg));
     updateNav(false);
 }
 

@@ -85,9 +85,10 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   dropdown entry, opened via `openArtistTracks()` from `VolumioArtists.cpp`). Paginated, tap a
   track to play it (addToQueue + play-Nth, same shape as `VolumioLibrary.cpp`'s `ACTION_PLAY`) --
   see item 31.
+- [ListStyle.cpp](ListStyle.cpp) — `styleListRow()`/`styleListText()`, the row look every list uses -- see item 45.
 - [DisplayConfig.h](DisplayConfig.h) — pins, screen dims, shared constants (`COLOR_ACCENT`,
   `TOP_BAR_H`, `SCREEN_TIMEOUT_MS`).
-- [CustomFonts.h](CustomFonts.h) + `src/fonts/font_montserrat_ext_{12,14,18}.c` — Montserrat fonts
+- [CustomFonts.h](CustomFonts.h) + `src/fonts/font_montserrat_ext_{12,14,18,32}.c` (32 is an icon-only subset for the menu tiles, item 44) — Montserrat fonts
   regenerated with a wider glyph range than LVGL's stock ones (accented letters, smart
   punctuation); see the quirks section below for why these exist and how to regenerate/resize
   them.
@@ -666,6 +667,32 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
     folder name as the Arduino toolchain requires. Older items mentioning Tuya/Lights describe
     removed code.
 
+43. **Colours fixed.** Greys looked green and the accent looked violet because the flush sent
+    pixels with their bytes swapped (see the colour quirk below). The flush now uses
+    `draw16bitRGBBitmap()`, so every colour, the green accent included, shows as written.
+
+44. **Menu redesigned as a 3x2 icon grid, copied from the sibling `audiopi-esp32-controller`
+    project (its item 46).** Replaces item 27's scrolling 2-column text grid. Tiles are 94x92, a
+    32px icon over a 14px name: Player, Library, Queue, Artists, System (one slot free; a seventh
+    tile would make the grid scroll). The tile for the screen you're on is filled with the accent
+    (`highlightCurrentTile()`, run every time the menu opens). Hidden sub-pages like ArtistTracks
+    highlight nothing. System swaps the grid for `system_view`, three full-width rows (Update
+    library, Restart Volumio, Shut down Volumio) that use the same confirm dialog as before, and
+    shows a back arrow top-left. Reopening the menu always starts on the grid. `addScreen()` now
+    takes an `icon` argument. The icons come from `src/fonts/font_montserrat_ext_32.c`, copied
+    from that project: digits, `%`, space and a few icons only, plus two unused ones (bulb, plug).
+    Compiled, **not flashed yet**.
+
+45. **List rows restyled to match `audiopi-esp32-controller` (its item 44).** `ListStyle.cpp`
+    (copied from there) gives every list (Library, Artists, ArtistTracks, Queue, the long-press
+    menu) the same rows: no background and no border at rest, so the list's black shows through,
+    a `0x333333` fill only while pressed, and children centered vertically. Rows use
+    `styleListRow()` (through each file's `styleButton()`) and texts from `lv_list_add_text()` use
+    `styleListText()`. **New lists should use these two helpers too.** The long-press menu's title
+    is now its only filled row (`0x333333`, white, 8px vertical padding). The menu panel is black
+    with a 1px `0x333333` outline. The accent stays green (`0x1DB954`), unlike AudioPi's violet.
+    Compiled, **not flashed yet**.
+
 - **LVGL's compiled-in fonts are ASCII-only** — the stock Montserrat fonts (`lv_conf.h`, shared,
   outside this repo) only cover code points 32-126 plus LVGL's own icon symbols (checked directly
   in the compiled font source, `lv_font_montserrat_18.c`'s `cmaps[]`). No curly quotes, en/em
@@ -708,17 +735,12 @@ local environment, copy `arduino_secrets.h.template` and fill in: `SECRET_SSID`,
   buffers) — WiFi's own connection-time allocations compete for that same early, "pristine" heap.
   A later, bigger reservation (for HTTPS + JPEG decode buffers) starved it enough that WiFi never
   connected at all. Measure actual headroom before assuming "early = safe."
-- **Colors look swapped on this display — root cause found, still deliberately not fixed.**
-  `COLOR_ACCENT` is `0x1DB954` (green) but renders blue-violet. Read from the code: the flush
-  (`LvglHandler.cpp`) calls `gfx->draw16bitBeRGBBitmap()`, which sends the buffer's bytes exactly
-  as they sit in memory (`Arduino_TFT.cpp` → `_bus->writeBytes`), but LVGL 9's RGB565 buffer is
-  little-endian (`lv_color16_t` bitfields, `LV_COLOR_16_SWAP` is a no-op in v9) while the ILI9341
-  wants the high byte first — so **every pixel reaches the panel with its two bytes swapped**
-  (black/white unaffected; `0x1DB954` → RGB565 `0x1DCA` → seen as `0xCA1D` ≈ violet; greys get
-  tinted too). The one-line fix would be `draw16bitRGBBitmap()`, but the user is fine with the
-  current look and the accent choice downstream assumes it, so it hasn't been touched — don't
-  "fix" it without asking. Anything where the *actual* colour matters has to pre-swap its colours to
-  compensate. This diagnosis is from reading the code, not from measuring the panel.
+- **Colour byte order (fixed in item 43).** LVGL 9's RGB565 buffer is little-endian
+  (`LV_COLOR_16_SWAP` is a no-op in v9) and the ILI9341 wants the high byte first. The flush used
+  `gfx->draw16bitBeRGBBitmap()`, which sends the bytes unswapped, so every pixel had its bytes
+  swapped: `COLOR_ACCENT` (`0x1DB954`, green) showed violet and greys came out tinted green. The
+  flush (`LvglHandler.cpp`) now uses `draw16bitRGBBitmap()`, which swaps, so colours appear as
+  written in the code. Don't switch it back to the `Be` variant.
 - **Serial port**: the user runs Arduino IDE with its own Serial Monitor attached to
   `/dev/ttyUSB0` most of the time. Don't kill that process to grab the port without asking first
   — did this once already and it was disruptive. If you need serial output, either ask the user
