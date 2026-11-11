@@ -95,10 +95,13 @@ Leave the other defaults as they are (16-bit colour depth, Montserrat 14 as the 
    #define SECRET_TIMEZONE "CET-1CEST,M3.5.0,M10.5.0/3"  // POSIX TZ string
    #define SECRET_VOLUMIO_HOST "volumio.local"            // hostname or IP
    #define SECRET_VOLUMIO_PORT 3000
+   #define SECRET_SERIAL_PORT "/dev/ttyUSB0"           // used by arduino.sh only
    ```
    `SECRET_TIMEZONE` is a POSIX TZ string. Look yours up in
    [this list](https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv). If
    `volumio.local` doesn't resolve on your network, use the Volumio device's IP address.
+   `SECRET_SERIAL_PORT` is the board's serial port for `./arduino.sh` (see below); the sketch
+   itself doesn't use it.
    `arduino_secrets.h` is gitignored, so your credentials stay out of the repository.
 
 ## Build and flash
@@ -120,8 +123,9 @@ arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app .
 arduino-cli upload  --fqbn esp32:esp32:esp32:PartitionScheme=huge_app -p /dev/ttyUSB0 .
 ```
 
-Or use the helper script, which has the board settings built in (edit `PORT` at the top if your
-board isn't `/dev/ttyUSB0`):
+Or use the helper script, which has the board settings built in. It uploads to the port in
+`SECRET_SERIAL_PORT` (`/dev/ttyUSB0` if that isn't set); `./arduino.sh list-boards` shows which
+port your board is on. To use another port for a single run: `PORT=/dev/ttyACM0 ./arduino.sh flash`.
 
 ```bash
 ./arduino.sh compile   # build

@@ -8,15 +8,25 @@
 #   (port-check shows what holds it).
 # - The sketch doesn't log to Serial by default, so an empty monitor is expected.
 #
-# Override the port with PORT=/dev/ttyACM0 ./arduino.sh flash
+# The serial port comes from SECRET_SERIAL_PORT in arduino_secrets.h (default /dev/ttyUSB0).
+# Override it for one run with PORT=/dev/ttyACM0 ./arduino.sh flash
 
 set -euo pipefail
 
 FQBN="esp32:esp32:esp32:PartitionScheme=huge_app"
-PORT="${PORT:-/dev/ttyUSB0}"
-BAUD="${BAUD:-115200}"
 # arduino-cli identifies a sketch by its directory, so resolve it from this script's location.
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The value of `#define SECRET_SERIAL_PORT "..."` in arduino_secrets.h, if there is one.
+secrets_port() {
+    local f="$DIR/arduino_secrets.h"
+    [[ -f "$f" ]] || return 0
+    sed -n 's/^[[:space:]]*#define[[:space:]]\{1,\}SECRET_SERIAL_PORT[[:space:]]\{1,\}"\([^"]*\)".*/\1/p' "$f" | head -n 1
+}
+
+SECRETS_PORT="$(secrets_port)"
+PORT="${PORT:-${SECRETS_PORT:-/dev/ttyUSB0}}"
+BAUD="${BAUD:-115200}"
 
 usage() {
     cat <<EOF

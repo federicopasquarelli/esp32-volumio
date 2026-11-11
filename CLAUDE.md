@@ -29,8 +29,8 @@ Engine.IO v3), plain HTTP for on-demand requests (browsing, queue).
   arduino-cli's cache, `~/.cache/arduino/sketches/<hash>/` (not the local `build/`). Seen once after
   two compiles overlapped. `./arduino.sh clean` fixes it.
 - **Serial port**: no `Serial` logging in the code (removed on purpose; add `Serial.begin()` back
-  to debug, then remove it). The maintainer usually has the Arduino IDE's serial monitor open on
-  `/dev/ttyUSB0`, so uploads fail with "port busy". Ask before killing whatever holds the port
+  to debug, then remove it). The maintainer usually has the Arduino IDE's serial monitor open on the
+  board's port (`SECRET_SERIAL_PORT`, `/dev/ttyUSB0` by default), so uploads fail with "port busy". Ask before killing whatever holds the port
   (`./arduino.sh port-check` shows it).
 
 ## Hardware
@@ -49,7 +49,9 @@ Engine.IO v3), plain HTTP for on-demand requests (browsing, queue).
 
 `arduino_secrets.h` (gitignored) from [arduino_secrets.h.template](arduino_secrets.h.template):
 `SECRET_SSID`, `SECRET_PASS`, `SECRET_TIMEZONE` (POSIX TZ), `SECRET_VOLUMIO_HOST`,
-`SECRET_VOLUMIO_PORT`. Never commit real values or copy them into other files.
+`SECRET_VOLUMIO_PORT`, and `SECRET_SERIAL_PORT`, which only [arduino.sh](arduino.sh) reads (with
+`sed`; the sketch ignores it). Precedence for the upload port: `PORT=` in the environment, then
+`SECRET_SERIAL_PORT`, then `/dev/ttyUSB0`. Never commit real values or copy them into other files.
 
 ## File map
 
