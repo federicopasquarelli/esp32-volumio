@@ -8,6 +8,12 @@ It talks to Volumio over its Socket.IO WebSocket (live player state) and its RES
 browsing, queue management), so it should work with any Volumio install on your network
 (Raspberry Pi or otherwise).
 
+## Preview
+
+| Playback controls | Menu navigation | Library navigation |
+|---|---|---|
+| <img src="https://github.com/user-attachments/assets/9eb24809-624e-46d6-8e05-bc997109822e" width="260" alt="Player screen with title, artist, transport controls and volume"> | <img src="https://github.com/user-attachments/assets/149f7e19-c224-4d9d-8917-889f5161c895" width="260" alt="Full-screen menu with the icon grid"> | <img src="https://github.com/user-attachments/assets/d070dea5-fe69-468f-a2a8-d5424ebae640" width="260" alt="Library browser showing a folder list"> |
+
 ## Features
 
 - **Now playing**: title, artist and album (accented characters and smart punctuation supported),
