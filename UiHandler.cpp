@@ -13,6 +13,8 @@ static lv_obj_t *label_elapsed, *label_volume;
 static lv_obj_t *btn_play, *btn_label, *btn_prev, *btn_next, *btn_shuffle, *btn_repeat;
 static lv_obj_t *slider_volume;
 static lv_obj_t* cont_offline = NULL;
+// Spinner + status text shown on the player until the first pushState builds its widgets.
+static lv_obj_t *cont_loading = NULL, *label_loading = NULL;
 static bool offline_shown = false;
 static bool currentShuffle = false;
 static bool currentRepeat = false;
@@ -345,6 +347,16 @@ void addSystemMenuActions() {
     addSystemRow(LV_SYMBOL_POWER, "Shut down Volumio", &shutdown_action);
 }
 
+// The header (clock, playback time, menu button) is hidden while the loader shows.
+static void setHeaderVisible(bool visible) {
+    lv_obj_t* objs[] = { label_top, label_elapsed, btn_menu };
+    for (lv_obj_t* o : objs) {
+        if (!o) continue;
+        if (visible) lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void setupUI() {
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
@@ -353,6 +365,7 @@ void setupUI() {
     lv_obj_set_style_text_font(label_top, &lv_font_montserrat_ext_18, 0);
     lv_obj_set_style_text_color(label_top, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(label_top, LV_ALIGN_TOP_LEFT, 10, 5);
+    lv_label_set_text(label_top, "");  // until the clock is synced (a new label reads "Text")
 
     // Elapsed / duration, top center. In the shared header so it's visible from every screen.
     label_elapsed = lv_label_create(scr);
@@ -524,7 +537,30 @@ void setupUI() {
     lv_obj_center(offline_label);
     lv_obj_add_flag(cont_offline, LV_OBJ_FLAG_HIDDEN);
 
+    // Loader, until the first pushState. Deleted then, so it's out of LVGL's pool for good.
+    cont_loading = lv_obj_create(cont_player);
+    lv_obj_remove_style_all(cont_loading);
+    lv_obj_set_size(cont_loading, LV_PCT(100), LV_PCT(100));
+    lv_obj_remove_flag(cont_loading, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_t* spinner = lv_spinner_create(cont_loading);
+    lv_obj_set_size(spinner, 48, 48);
+    lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -14);
+    lv_obj_set_style_arc_width(spinner, 5, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(spinner, 5, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(spinner, lv_color_hex(0x222222), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(spinner, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
+    label_loading = lv_label_create(cont_loading);
+    lv_obj_set_style_text_font(label_loading, &lv_font_montserrat_ext_14, 0);
+    lv_obj_set_style_text_color(label_loading, lv_color_hex(0xAAAAAA), 0);
+    lv_label_set_text(label_loading, "");
+    lv_obj_align(label_loading, LV_ALIGN_CENTER, 0, 34);
+    setHeaderVisible(false);
+
     addMenuEntry("Player", LV_SYMBOL_PLAY, cont_player);
+}
+
+void setLoadingStatus(const char* text) {
+    if (label_loading) lv_label_set_text(label_loading, text);
 }
 
 void setVolumioOffline(bool offline) {
@@ -535,8 +571,18 @@ void setVolumioOffline(bool offline) {
         // later drop they'd otherwise sit on top of it.
         lv_obj_move_foreground(cont_offline);
         lv_obj_remove_flag(cont_offline, LV_OBJ_FLAG_HIDDEN);
+        // Hidden, not deleted: it comes back if Volumio returns before sending a state.
+        // The header comes back with it, so the menu stays usable while Volumio is down.
+        if (cont_loading) {
+            lv_obj_add_flag(cont_loading, LV_OBJ_FLAG_HIDDEN);
+            setHeaderVisible(true);
+        }
     } else {
         lv_obj_add_flag(cont_offline, LV_OBJ_FLAG_HIDDEN);
+        if (cont_loading) {
+            lv_obj_remove_flag(cont_loading, LV_OBJ_FLAG_HIDDEN);
+            setHeaderVisible(false);
+        }
     }
 }
 
@@ -591,6 +637,11 @@ void updateVolumioUI(const char* title, const char* artist, const char* album, b
     currentRepeatSingle = repeatSingle;
 
     if (!label_title) {
+        if (cont_loading) {
+            lv_obj_delete(cont_loading);
+            cont_loading = label_loading = NULL;
+            setHeaderVisible(true);
+        }
         lv_obj_t* t1 = cont_player;
 
         // Track info, top of the screen, left-aligned.

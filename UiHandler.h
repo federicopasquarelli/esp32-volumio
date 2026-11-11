@@ -31,6 +31,8 @@ void updateVolumeUI(int volume);
 // Shows/hides the "Volumio is unreachable" notice covering the player screen. Cheap to call every
 // loop() iteration -- it no-ops unless the state actually changes.
 void setVolumioOffline(bool offline);
+// Sets the text under the player's loader (shown until the first pushState).
+void setLoadingStatus(const char* text);
 // Redraws the elapsed-time label from the time since the last pushState. Call every loop()
 // iteration; it no-ops unless the displayed second changed.
 void tickPlaybackClock();
