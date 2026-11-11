@@ -6,6 +6,8 @@
 
 // Long-press menu (Play / Add to queue / Clear and play, plus "Update folder" when with_update).
 void showQueueActionMenu(const char* title, const char* uri, const char* service, bool with_update);
+// Long-press menu for a saved playlist (Add to queue / Clear and play), by its name.
+void showPlaylistActionMenu(const char* name);
 // Runs one action in the background. Ignored while another is still running.
 void startQueueAction(QueueAction action, const char* service, const char* uri, const char* title);
 

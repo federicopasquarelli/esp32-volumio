@@ -17,7 +17,11 @@ browsing, queue management), so it should work with any Volumio install on your 
   count. Long-press a folder to *Play*, *Add to queue*, *Clear and play*, or *Update folder*.
 - **Artists**: paginated list of every artist. Tap an artist to see their tracks, and long-press
   one to play or queue everything by them.
-- **Queue**: view the current queue, tap a track to jump to it, remove tracks.
+- **Playlists**: your saved Volumio playlists. Tap one to see its tracks, long-press it to add it
+  to the queue or clear the queue and play it.
+- **Web radio**: browse Volumio's radio directory (Volumio Selection, Top 500, by genre, by
+  country, your favourites...) and tap a station to play it.
+- **Queue**: view the current queue, tap a track to jump to it, reorder or remove tracks.
 - **System actions** (with confirmation): update the library database, restart or shut down the
   Volumio device.
 - **AirPlay aware**: transport controls are disabled while Volumio is playing via AirPlay.
@@ -127,14 +131,17 @@ board isn't `/dev/ttyUSB0`):
 
 ## Usage
 
-- Tap the menu button (top right) for a grid of **Player**, **Library**, **Queue**, **Artists**
-  and **System**. The tile of the screen you're on is highlighted. **System** holds *Update
+- Tap the menu button (top right) for a grid of **Player**, **Library**, **Queue**, **Artists**,
+  **Playlists**, **Radio** and **System**. The tile of the screen you're on is highlighted. **System** holds *Update
   library*, *Restart Volumio* and *Shut down Volumio*, each asking for confirmation first.
 - Tap a folder to open it, or a track to play it. Long-press a folder or artist for queue options.
 - Tap an artist to see their tracks, then tap a track to play it.
-- In the queue, tap a track to jump to it, or its **×** to remove it. The trash button clears the
+- In Playlists, tap a playlist for its tracks or long-press it to queue or play it. In Radio, open
+  a category and tap a station.
+- In the queue, tap a track to jump to it, its **▲**/**▼** to move it, or its **×** to remove it. The trash button clears the
   queue.
-- Use the buttons at the bottom of a list to page through it (and, in Library, to go up a folder).
+- Use the buttons at the bottom of a list to page through it. In Library, Playlists and Radio the
+  current folder's path is shown above the list, with the button to go up a folder next to it.
 
 ## Troubleshooting
 
@@ -161,10 +168,10 @@ board isn't `/dev/ttyUSB0`):
 | `UiHandler.*` | Header, menu, player screen, screen registration |
 | `VolumioHandler.*` | WebSocket connection and playback commands |
 | `VolumioApi.*` | Shared Volumio REST helpers |
-| `VolumioLibrary.*` | Library browser |
+| `BrowseScreen.*` | Folder browser behind Library, Playlists and Radio |
 | `VolumioArtists.*`, `VolumioArtistTracks.*` | Artist list and per-artist tracks |
 | `VolumioQueue.*` | Queue viewer/editor |
-| `QueueActionMenu.*` | Long-press Play / Add to queue / Clear and play menu |
+| `QueueActionMenu.*` | Long-press Play / Add to queue / Clear and play menus (folders, playlists) |
 | `PaginationNav.*` | Shared Prev/Next buttons and page indicator |
 | `ListStyle.*` | Shared list row style |
 | `CustomFonts.h`, `src/fonts/` | Montserrat fonts with accented characters and smart punctuation |

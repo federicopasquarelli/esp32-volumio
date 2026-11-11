@@ -5,6 +5,9 @@
 
 #define MENU_ROW_H 34
 #define ACTION_UPDATE (QUEUE_CLEAR_AND_PLAY + 1)
+// A saved playlist goes over the WebSocket by name instead (see showPlaylistActionMenu()).
+#define ACTION_PLAYLIST_ADD (ACTION_UPDATE + 1)
+#define ACTION_PLAYLIST_PLAY (ACTION_UPDATE + 2)
 
 struct ActionItem {
     char title[96];
@@ -49,6 +52,10 @@ static void menu_action_cb(lv_event_t* e) {
     if (action == ACTION_UPDATE) {
         // Volumio has no REST route for a database update, so this one uses the WebSocket.
         updateFolder(menu_item.uri);
+    } else if (action == ACTION_PLAYLIST_ADD) {
+        enqueuePlaylist(menu_item.title);
+    } else if (action == ACTION_PLAYLIST_PLAY) {
+        playPlaylist(menu_item.title);
     } else {
         startQueueAction((QueueAction)action, menu_item.service, menu_item.uri, menu_item.title);
     }
@@ -57,7 +64,8 @@ static void menu_action_cb(lv_event_t* e) {
     lv_obj_delete_async(overlay);
 }
 
-void showQueueActionMenu(const char* title, const char* uri, const char* service, bool with_update) {
+// Builds the menu with one row per entry of actions (QueueAction values or the ACTION_* above).
+static void openMenu(const char* title, const char* uri, const char* service, const int* actions, int count) {
     copyItem(menu_item, title, uri, service);
 
     lv_obj_t* overlay = lv_obj_create(lv_layer_top());
@@ -93,12 +101,30 @@ void showQueueActionMenu(const char* title, const char* uri, const char* service
     lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_width(label, LV_PCT(100));
 
-    static const char* icons[] = { LV_SYMBOL_PLAY, LV_SYMBOL_PLUS, LV_SYMBOL_TRASH, LV_SYMBOL_REFRESH };
-    static const char* names[] = { "Play", "Add to queue", "Clear and play", "Update folder" };
-    int count = with_update ? 4 : 3;
     for (int i = 0; i < count; i++) {
-        lv_obj_t* b = lv_list_add_button(menu, icons[i], names[i]);
+        int a = actions[i];
+        const char* icon;
+        const char* name;
+        switch (a) {
+            case QUEUE_PLAY:           icon = LV_SYMBOL_PLAY;    name = "Play"; break;
+            case QUEUE_ADD:
+            case ACTION_PLAYLIST_ADD:  icon = LV_SYMBOL_PLUS;    name = "Add to queue"; break;
+            case ACTION_UPDATE:        icon = LV_SYMBOL_REFRESH; name = "Update folder"; break;
+            default:                   icon = LV_SYMBOL_TRASH;   name = "Clear and play"; break;
+        }
+        lv_obj_t* b = lv_list_add_button(menu, icon, name);
         styleListRow(b, MENU_ROW_H);
-        lv_obj_add_event_cb(b, menu_action_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+        lv_obj_add_event_cb(b, menu_action_cb, LV_EVENT_CLICKED, (void*)(intptr_t)a);
     }
+}
+
+void showQueueActionMenu(const char* title, const char* uri, const char* service, bool with_update) {
+    static const int actions[] = { QUEUE_PLAY, QUEUE_ADD, QUEUE_CLEAR_AND_PLAY, ACTION_UPDATE };
+    openMenu(title, uri, service, actions, with_update ? 4 : 3);
+}
+
+void showPlaylistActionMenu(const char* name) {
+    // No "Play" (add, then play from there): Volumio's playlist events only append or replace.
+    static const int actions[] = { ACTION_PLAYLIST_ADD, ACTION_PLAYLIST_PLAY };
+    openMenu(name, "", "", actions, 2);
 }

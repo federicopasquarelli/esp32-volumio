@@ -11,7 +11,7 @@
 // local override doesn't cancel them. Paging quickly piles those transitions up faster than they
 // finish, exhausting LVGL's memory pool, and LVGL's failed-allocation assert then hangs the UI.
 lv_obj_t* createPagerButton(lv_obj_t* parent, int32_t width, int32_t height,
-                             const char* symbol, lv_event_cb_t cb);
+                             const char* symbol, lv_event_cb_t cb, void* user_data = NULL);
 
 // Adds/removes LV_STATE_DISABLED.
 void setPagerEnabled(lv_obj_t* obj, bool enabled);

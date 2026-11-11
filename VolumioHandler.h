@@ -13,6 +13,12 @@ void setRepeatMode(bool value, bool repeatSingle);
 void setShuffle(bool shuffle);
 void updateFolder(const char* uri);
 void removeFromQueue(int index);
+// Moves the queue item at index from to index to (websocket "moveQueue", no REST route).
+void moveInQueue(int from, int to);
+// A saved playlist, by name (websocket "playPlaylist" replaces the queue and plays it, "enqueue"
+// appends it). These are what Volumio's own UI sends for playlists.
+void playPlaylist(const char* name);
+void enqueuePlaylist(const char* name);
 // Rescans the whole music library for changes. False while the websocket isn't connected.
 bool updateLibraryDb();
 // Reboots / shuts down the Volumio device itself (its websocket "reboot" / "shutdown" events --

@@ -2,7 +2,7 @@
 #include "DisplayConfig.h"
 
 lv_obj_t* createPagerButton(lv_obj_t* parent, int32_t width, int32_t height,
-                             const char* symbol, lv_event_cb_t cb) {
+                             const char* symbol, lv_event_cb_t cb, void* user_data) {
     lv_obj_t* b = lv_button_create(parent);
 
     // Keep the theme's corner radius; every colour is set explicitly below.
@@ -22,7 +22,7 @@ lv_obj_t* createPagerButton(lv_obj_t* parent, int32_t width, int32_t height,
     lv_obj_set_style_text_color(b, lv_color_hex(0xAAAAAA), LV_STATE_DISABLED);
     lv_obj_set_style_border_width(b, 1, LV_STATE_DISABLED);
     lv_obj_set_style_border_color(b, lv_color_hex(COLOR_ACCENT), LV_STATE_DISABLED);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, user_data);
 
     lv_obj_t* l = lv_label_create(b);
     lv_label_set_text(l, symbol);

@@ -164,10 +164,10 @@ void showPlayer() {
     showScreen(cont_player);
 }
 
-// --- Menu tiles: a 3x2 grid of icon + name tiles, the last one "System" ---
+// --- Menu tiles: a 4x2 grid of icon + name tiles, the last one "System" ---
 
 #define MAX_MENU_TILES (MAX_SCREENS + 2)  // + Player, + System
-#define MENU_TILE_W 94   // three across the grid's 300px of usable width, 8px apart
+#define MENU_TILE_W 69   // four across the grid's 300px of usable width, 8px apart
 #define MENU_TILE_H 92   // two rows in the 204px below the header (6px padding top and bottom)
 
 struct MenuTile { lv_obj_t* btn; lv_obj_t* icon; lv_obj_t* target; };  // target NULL: System
@@ -371,7 +371,7 @@ void setupUI() {
     lv_obj_center(menu_icon);
 
     // Menu: a full-screen overlay (covering the header too) with a title, a close button in the
-    // same top-right spot as the button that opens it, and a 3x2 grid of icon tiles -- Player, one
+    // same top-right spot as the button that opens it, and a 4x2 grid of icon tiles -- Player, one
     // per screen registered with addScreen(), and System (the system actions, one tap further
     // away). Hidden until btn_menu is tapped.
     menu_list = lv_obj_create(scr);
@@ -414,7 +414,7 @@ void setupUI() {
 
     menu_grid = lv_obj_create(menu_list);
     lv_obj_set_pos(menu_grid, 0, TOP_BAR_H);
-    // Six tiles fill it exactly; a seventh would make it scroll.
+    // Eight tiles fill it exactly; a ninth would make it scroll.
     lv_obj_set_size(menu_grid, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_H);
     lv_obj_set_style_bg_opa(menu_grid, LV_OPA_TRANSP, 0);
     lv_obj_set_style_radius(menu_grid, 0, 0);

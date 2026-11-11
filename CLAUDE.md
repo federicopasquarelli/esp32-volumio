@@ -58,15 +58,20 @@ Engine.IO v3), plain HTTP for on-demand requests (browsing, queue).
   (backlight off, switch to the player; the waking touch isn't passed on as a press).
 - [TouchHandler.cpp](TouchHandler.cpp): XPT2046 reading and filtering.
 - [UiHandler.cpp](UiHandler.cpp): header (clock, playback time, menu button), the player screen,
-  the full-screen menu overlay (3x2 icon grid, System view, confirm dialog) and the screen
+  the full-screen menu overlay (4x2 icon grid, System view, confirm dialog) and the screen
   registry (`addScreen()`/`addHiddenScreen()`/`showScreen()`).
 - [VolumioHandler.cpp](VolumioHandler.cpp): the WebSocket, the reachability probe, playback and
   system commands.
 - [VolumioApi.cpp](VolumioApi.cpp): REST helpers (`volumioUrl()`, `urlEncode()`, `streamQueue()`)
   and `runQueueAction()` (Play / Add to queue / Clear and play).
-- [QueueActionMenu.cpp](QueueActionMenu.cpp): the long-press menu shared by Library and Artists,
+- [BrowseScreen.cpp](BrowseScreen.cpp): the folder browser over `/api/v1/browse`. Library,
+  Playlists and Radio are three instances (root URI, max depth, empty text, whether folders get
+  the queue menu), declared in the .ino and registered with captureless lambdas, since
+  `addScreen()` takes plain function pointers. Each owns its fetch task and HTTP client; the
+  path stack is malloc'd on first open.
+- [QueueActionMenu.cpp](QueueActionMenu.cpp): the long-press menus shared by the browsers and Artists,
   and `startQueueAction()`, the background task every "play this" goes through (one at a time).
-- [VolumioLibrary.cpp](VolumioLibrary.cpp), [VolumioArtists.cpp](VolumioArtists.cpp),
+- [VolumioArtists.cpp](VolumioArtists.cpp),
   [VolumioArtistTracks.cpp](VolumioArtistTracks.cpp), [VolumioQueue.cpp](VolumioQueue.cpp): the
   list screens.
 - [PaginationNav.cpp](PaginationNav.cpp): the bottom-bar buttons and page label every list uses.
@@ -80,7 +85,7 @@ Engine.IO v3), plain HTTP for on-demand requests (browsing, queue).
 on_hide)` creates an empty container and a menu tile. `showScreen()` runs the old screen's
 `on_hide` (which `lv_obj_clean()`s its container and nulls its widget pointers) and the new one's
 `on_build` then `on_show`. Small state (current folder, page) survives a hide, so reopening
-Library or Artists returns to the same place; ArtistTracks always starts on page 1. The player
+Library, Playlists, Radio or Artists returns to the same place; ArtistTracks always starts on page 1. The player
 and the menu overlay are built once and never freed: they're visited constantly and cheap.
 `addSystemMenuActions()` must run after every `addScreen()` so System is the last tile.
 
@@ -118,7 +123,8 @@ by the artist text. Play/prev/next are disabled and the artist reads "Airplay".
 
 - Live state: WebSocket `/socket.io/?EIO=3&transport=websocket`, messages `42[...]`. `pushState`
   mirrors `GET /api/v1/getState`.
-- WebSocket only, no REST equivalent: `removeFromQueue` `{value: index}`, `updateDb` (no payload
+- WebSocket only, no REST equivalent: `removeFromQueue` `{value: index}`, `moveQueue`
+  `{from, to}` (not yet checked on a live server), `updateDb` (no payload
   = whole library, a URI = one folder), `reboot`, `shutdown` (from the backend source,
   `app/plugins/user_interface/websocket/index.js`; not in Volumio's docs). There's no event to
   restart only the service, so "Restart" reboots the device. **Never test shutdown against a real
@@ -129,6 +135,15 @@ by the artist text. Play/prev/next are disabled and the artist reads "Airplay".
   items). `streamQueue()` walks the array element by element, parses only the wanted range and
   skips the rest with a string/escape-aware brace counter. Never `deserializeJson()` the whole
   response.
+- `radio` browses like `music-library` too (offset/limit/count honoured, so `radio/top500`'s
+  500 stations page server-side). Categories are type `radio-category`/`mywebradio-category`/
+  `radio-favourites`, stations are type `webradio` with the stream URL as `uri` and service
+  `webradio`; they play through `addToQueue` like any track.
+- `playlists` lists type `playlist` items (`playlists/<name>`). Playing or queueing a whole
+  playlist uses the WebSocket `playPlaylist` / `enqueue` events `{name}`, which is what Volumio's
+  UI sends; REST `addToQueue` with a playlist URI wasn't tried. Not yet checked with a server that
+  has playlists (the maintainer's has none): whether browsing inside one honours offset/limit is
+  unknown.
 - `artists://` browses like `music-library` (same offset/limit/count). `artists://<name>` returns
   two lists, "Albums (...)" and "Tracks (...)", each paged independently; only Tracks is used,
   found by title prefix. `addToQueue` with an artist URI queues all their tracks; artist entries
