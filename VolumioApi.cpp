@@ -24,7 +24,7 @@ String urlEncode(const char* msg) {
     return out;
 }
 
-int postJson(const char* path, const JsonDocument& body) {
+static int postJson(const char* path, const JsonDocument& body) {
     WiFiClient client;
     HTTPClient req;
     req.begin(client, volumioUrl(path));
@@ -119,7 +119,8 @@ int streamQueue(int first, int count, const JsonDocument& filter,
     return total;
 }
 
-int queueLength() {
+// Number of tracks in the queue, or -1 on failure.
+static int queueLength() {
     JsonDocument none;
     return streamQueue(0, 0, none, NULL, NULL);
 }

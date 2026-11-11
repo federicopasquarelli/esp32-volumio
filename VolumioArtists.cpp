@@ -9,17 +9,8 @@
 #include "VolumioArtistTracks.h"
 #include "QueueActionMenu.h"
 
-// Same /api/v1/browse endpoint VolumioLibrary.cpp uses for "music-library", just rooted at
-// "artists://" instead -- confirmed live against volumio.local that it takes the exact same
-// offset/limit and returns the exact same "count" (real total, not just this page's size) that
-// VolumioLibrary.cpp's pagination already relies on. So this screen is a flat, paginated list of
-// artist names, built the same way, and lazy-built/freed on show/hide like every other screen
-// (see CLAUDE.md item 29).
-//
-// Tapping an artist opens VolumioArtistTracks.cpp's screen (their track list) -- see that file
-// for why it's tracks only, not a full albums+tracks browser: browsing "artists://<name>" comes
-// back as TWO separate lists in the same response, each with its own independent items/count,
-// rather than the single list this pager (and Library's) assumes.
+// A flat, paginated list of artists: /api/v1/browse on "artists://", with the same offset/limit
+// and "count" as Library's "music-library". Tapping an artist opens VolumioArtistTracks.cpp.
 
 #define ARTISTS_ROOT_URI  "artists://"
 #define ARTISTS_PAGE_SIZE 4
@@ -40,11 +31,10 @@ static lv_obj_t* label_page = NULL;
 static int page = 0;
 static int pending_page = 0;
 
-// Only the page currently on screen is ever held in RAM, same reasoning as Library's items[].
+// Only the page on screen is held in RAM.
 static ArtistItem items[ARTISTS_PAGE_SIZE];
 static int item_count = 0;
-// True if there's a next page, from Volumio's own "count" (real total) -- falls back to the
-// old "was the page full?" guess only if a response is ever missing "count".
+// True if there's a next page, from "count" (or a full page if the response had none).
 static bool has_more = false;
 static int total_count = -1;
 
@@ -73,8 +63,6 @@ static void fetchTask(void*) {
     if (code != HTTP_CODE_OK) {
         strlcpy(fetch_error, "Request failed", sizeof(fetch_error));
     } else {
-        // artists:// at the top level is a single list (unlike browsing into one artist, see the
-        // file header comment), so this filter/parse is the same shape as Library's.
         JsonDocument filter;
         filter["navigation"]["lists"][0]["items"][0]["title"] = true;
         filter["navigation"]["lists"][0]["items"][0]["uri"] = true;
@@ -112,18 +100,14 @@ static void startFetch(int pageToFetch) {
     if (fetching) return;
     fetching = true;
     fetch_page = pageToFetch;
-    // Return value checked -- see CLAUDE.md item 25's follow-up: an unchecked task-creation
-    // failure here would leave `fetching` stuck true forever with nothing to ever clear it.
+    // On a fragmented heap the task's stack may not fit; without this, fetching stays true forever.
     if (xTaskCreatePinnedToCore(fetchTask, "ArtistsFetch", 8192, NULL, 1, NULL, 1) != pdPASS) {
         fetching = false;
         showError("Out of memory, try again");
     }
 }
 
-// listing is false while loading or showing an error, when paging makes no sense. Shows
-// "current/total (item count)" when the last fetch's response included Volumio's real total
-// count, otherwise just the current page number -- see PaginationNav.cpp's formatPageLabel(),
-// shared by every paginated screen.
+// listing is false while loading or showing an error, when paging makes no sense.
 static void updateNav(bool listing) {
     char txt[24];
     formatPageLabel(txt, sizeof(txt), listing, page, ARTISTS_PAGE_SIZE, total_count);
@@ -138,7 +122,7 @@ static void setStatus(const char* text) {
     updateNav(false);
 }
 
-// Retries at whatever page the failed fetch was targeting -- pending_page still holds it.
+// Retries the page the failed fetch was for (still in pending_page).
 static void retry_cb(lv_event_t*) {
     if (fetching) return;
     setStatus(LV_SYMBOL_REFRESH " Loading...");
@@ -147,8 +131,7 @@ static void retry_cb(lv_event_t*) {
 
 static void styleButton(lv_obj_t* btn) { styleListRow(btn, ARTISTS_ROW_H); }
 
-// LVGL still sends CLICKED on release after a long press, so remember the press was consumed --
-// same pattern VolumioLibrary.cpp's item_cb() uses for its folder rows.
+// LVGL still sends CLICKED on release after a long press, so remember the press was consumed.
 static bool long_press_handled = false;
 
 static void item_cb(lv_event_t* e) {
@@ -169,8 +152,6 @@ static void item_cb(lv_event_t* e) {
     }
 }
 
-// items[] only ever holds the page just fetched (server-side offset/limit already did the
-// slicing), so this just renders all of it.
 static void showList() {
     lv_obj_clean(list_artists);
 
@@ -198,8 +179,6 @@ static void next_page_cb(lv_event_t*) {
     startFetch(pending_page);
 }
 
-// on_build: constructs the widget tree. Mirrors VolumioLibrary.cpp's buildLibrary() minus the
-// "Up" button (this is a single flat level, nowhere to go back to).
 void buildArtists(lv_obj_t* parent) {
     tab_artists = parent;
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
@@ -228,7 +207,6 @@ void buildArtists(lv_obj_t* parent) {
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    // No "Up" button -- unlike Library, this is a single flat level with nowhere to go back to.
     btn_prev_page = createPagerButton(bar, 70, ARTISTS_ROW_H - 4, LV_SYMBOL_LEFT, prev_page_cb);
     label_page = lv_label_create(bar);
     lv_obj_set_style_text_color(label_page, lv_color_hex(0xFFFFFF), 0);
@@ -236,16 +214,12 @@ void buildArtists(lv_obj_t* parent) {
     updateNav(false);
 }
 
-// on_show: re-fetches the remembered page (page 0 the first time ever) -- items[] and the list
-// widgets were both wiped on hide, so this repopulates the freshly-rebuilt (empty) list.
 void refreshArtists() {
     pending_page = page;
     setStatus(LV_SYMBOL_REFRESH " Loading...");
     startFetch(pending_page);
 }
 
-// on_hide: frees this screen's widgets back to LVGL's pool. `page` is deliberately left alone --
-// refreshArtists() uses it to rebuild the same view next time.
 void hideArtists() {
     lv_obj_clean(tab_artists);
     list_artists = NULL;
@@ -271,8 +245,7 @@ void loopArtists() {
     fetch_done = false;
 
     if (!list_artists) {
-        // Screen was hidden (its widgets torn down) while this fetch was in flight -- discard;
-        // refreshArtists() starts a fresh one the next time this screen is shown.
+        // Hidden while the fetch was in flight: drop the result, refreshArtists() fetches again.
         fetching = false;
         return;
     }

@@ -281,9 +281,7 @@ void loopQueue() {
     busy = false;
 
     if (!list_queue) {
-        // Screen was hidden (its widgets torn down) while this op was in flight -- discard the
-        // result instead of touching freed/NULL pointers. refreshQueue() starts a fresh one the
-        // next time this screen is shown, so nothing is lost.
+        // Hidden while the op was in flight: drop the result, refreshQueue() fetches again.
         return;
     }
 
