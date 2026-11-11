@@ -1,6 +1,13 @@
 #include "LvglHandler.h"
 #include "TouchHandler.h"
 #include "UiHandler.h"
+#include "arduino_secrets.h"
+
+// Backlight turns off after this long without a touch. Optional in arduino_secrets.h.
+#ifndef SECRET_SCREEN_TIMEOUT_SEC
+#define SECRET_SCREEN_TIMEOUT_SEC 30
+#endif
+#define SCREEN_TIMEOUT_MS ((unsigned long)(SECRET_SCREEN_TIMEOUT_SEC) * 1000UL)
 
 Arduino_DataBus *bus = new Arduino_ESP32SPI(DC, CS, SCK, MOSI, MISO);
 Arduino_GFX *gfx = new Arduino_ILI9341(bus, RST, 0, true);

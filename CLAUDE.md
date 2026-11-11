@@ -49,15 +49,16 @@ Engine.IO v3), plain HTTP for on-demand requests (browsing, queue).
 
 `arduino_secrets.h` (gitignored) from [arduino_secrets.h.template](arduino_secrets.h.template):
 `SECRET_SSID`, `SECRET_PASS`, `SECRET_TIMEZONE` (POSIX TZ), `SECRET_VOLUMIO_HOST`,
-`SECRET_VOLUMIO_PORT`, and `SECRET_SERIAL_PORT`, which only [arduino.sh](arduino.sh) reads (with
+`SECRET_VOLUMIO_PORT`, the optional `SECRET_SCREEN_TIMEOUT_SEC` (default 30), and `SECRET_SERIAL_PORT`, which only [arduino.sh](arduino.sh) reads (with
 `sed`; the sketch ignores it). Precedence for the upload port: `PORT=` in the environment, then
 `SECRET_SERIAL_PORT`, then `/dev/ttyUSB0`. Never commit real values or copy them into other files.
 
 ## File map
 
 - [esp32-volumio.ino](esp32-volumio.ino): `setup()`/`loop()`, registers the screens.
-- [LvglHandler.cpp](LvglHandler.cpp): LVGL init, flush, touch read, the 30s screen timeout
-  (backlight off, switch to the player; the waking touch isn't passed on as a press).
+- [LvglHandler.cpp](LvglHandler.cpp): LVGL init, flush, touch read, the screen timeout
+  (`SECRET_SCREEN_TIMEOUT_SEC`, 30s by default: backlight off, switch to the player; the waking
+  touch isn't passed on as a press).
 - [TouchHandler.cpp](TouchHandler.cpp): XPT2046 reading and filtering.
 - [UiHandler.cpp](UiHandler.cpp): header (clock, playback time, menu button), the player screen,
   the full-screen menu overlay (4x2 icon grid, System view, confirm dialog) and the screen
