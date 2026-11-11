@@ -14,11 +14,8 @@ void setup() {
     setupLVGL();
     setupTouch();
     setupUI();
-    // Every screen's widgets are built lazily (on_build) the first time it's actually shown, and
-    // freed again (on_hide) when navigating away -- see CLAUDE.md item 29. Data loading
-    // (on_show) follows the same lazy timing, so there's no need to pre-fetch Library/Queue here
-    // at boot the way this used to (openLibraryRoot()/refreshQueue() were called explicitly
-    // below; the first showScreen() to each now triggers them instead).
+    // Screens are built (on_build) and loaded (on_show) when first shown, and freed (on_hide)
+    // when left, so only the visible one uses LVGL memory.
     setupLibrary(addScreen("Library", LV_SYMBOL_DIRECTORY, buildLibrary, refreshLibrary, hideLibrary));
     setupQueue(addScreen("Queue", LV_SYMBOL_LIST, buildQueue, refreshQueue, hideQueue));
     lv_obj_t* artistsScreen = addScreen("Artists", SYMBOL_USER, buildArtists, refreshArtists, hideArtists);
@@ -43,9 +40,7 @@ void loop() {
         updateTime();
         last_clock = millis();
     }
-    // No timer here on purpose: it recomputes from real elapsed milliseconds every loop
-    // iteration (cheap — it no-ops unless the displayed second actually changed), rather than
-    // being gated by its own periodic tick that could end up phase-locked with another timer.
+    // Not on a timer: it recomputes from elapsed milliseconds and no-ops unless the second changed.
     tickPlaybackClock();
     delay(5);
 }

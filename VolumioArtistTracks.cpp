@@ -10,17 +10,10 @@
 #include "VolumioApi.h"
 #include "QueueActionMenu.h"
 
-// Per-artist track list, opened by tapping a row on the Artists screen (VolumioArtists.cpp).
-// Browsing "artists://<name>" (confirmed live) returns TWO separate lists in the same response --
-// "Albums (<name>)" and "Tracks (<name>)" -- each with its own independent items/count, and
-// offset/limit slices each list independently rather than treating them as one combined sequence
-// (see VolumioArtists.cpp's file header). This screen only cares about the Tracks list -- Albums
-// is ignored entirely -- picked out by its title starting with "Tracks" rather than by array
-// position, in case Volumio ever reorders them.
-//
-// Each track item comes back with a normal "service"/"uri"/"title" identical in shape to a
-// Library track (e.g. uri "music-library/USB/.../song.flac"), so tapping one to play reuses the
-// same addToQueue + play-Nth pattern VolumioLibrary.cpp's ACTION_PLAY does.
+// Per-artist track list, opened by tapping an artist (VolumioArtists.cpp). Browsing
+// "artists://<name>" returns two lists, "Albums (<name>)" and "Tracks (<name>)", each paged
+// independently by offset/limit. Only the Tracks list is shown, found by its title rather than its
+// position. Tapping a track plays it like a Library track.
 
 #define TRACKS_PAGE_SIZE   4
 #define TRACKS_ROW_H       34
@@ -49,7 +42,7 @@ static char artist_name[ARTIST_NAME_LEN] = "";
 static int page = 0;
 static int pending_page = 0;
 
-// Only the page currently on screen is ever held in RAM, same reasoning as Library's items[].
+// Only the page on screen is held in RAM.
 static TrackItem tracks[TRACKS_PAGE_SIZE];
 static int track_count = 0;
 static bool has_more = false;
@@ -70,8 +63,7 @@ static void showError(const char* error);  // defined further down, used by star
 static void fetchTask(void*) {
     fetch_error[0] = '\0';
 
-    // artist_uri is used as-is, NOT urlEncode()'d -- see this file's header comment / the .h's
-    // openArtistTracks() comment for why re-encoding it would corrupt it.
+    // Not urlEncode()'d: Volumio already returns it encoded (see openArtistTracks()).
     String url = volumioUrl("browse?uri=") + artist_uri +
                  "&offset=" + String(fetch_page * TRACKS_PAGE_SIZE) + "&limit=" + String(TRACKS_PAGE_SIZE);
     http.setReuse(true);
@@ -124,8 +116,7 @@ static void startFetch(int pageToFetch) {
     if (fetching) return;
     fetching = true;
     fetch_page = pageToFetch;
-    // Return value checked -- see CLAUDE.md item 25's follow-up: an unchecked task-creation
-    // failure here would leave `fetching` stuck true forever with nothing to ever clear it.
+    // On a fragmented heap the task's stack may not fit; without this, fetching stays true forever.
     if (xTaskCreatePinnedToCore(fetchTask, "ArtistTracks", 8192, NULL, 1, NULL, 1) != pdPASS) {
         fetching = false;
         showError("Out of memory, try again");
@@ -146,7 +137,7 @@ static void setStatus(const char* text) {
     updateNav(false);
 }
 
-// Retries at whatever page the failed fetch was targeting -- pending_page still holds it.
+// Retries the page the failed fetch was for (still in pending_page).
 static void retry_cb(lv_event_t*) {
     if (fetching) return;
     setStatus(LV_SYMBOL_REFRESH " Loading...");
@@ -160,8 +151,6 @@ static void track_cb(lv_event_t* e) {
     if (idx >= 0 && idx < track_count) startQueueAction(QUEUE_PLAY, tracks[idx].service, tracks[idx].uri, tracks[idx].title);
 }
 
-// tracks[] only ever holds the page just fetched (server-side offset/limit already did the
-// slicing), so this just renders all of it.
 static void showList() {
     lv_obj_clean(list_tracks);
 
@@ -198,10 +187,8 @@ void setupArtistTracks(lv_obj_t* artistsScreen, lv_obj_t* tracksScreenParent) {
     tracks_screen = tracksScreenParent;
 }
 
-// on_build: constructs the widget tree -- a compact header row (Back + artist name, same height
-// as a list row so the math below is exact), the track list, and the same Prev/Next bar every
-// other paginated screen has. 34 (header) + 34*4 (list) + 34 (nav bar) = 204 = the full content
-// height below the top bar.
+// A header row (Back + artist name), the track list and the Prev/Next bar, each row 34px:
+// 34 + 34*4 + 34 = 204, the full height below the top bar.
 void buildArtistTracks(lv_obj_t* parent) {
     tracks_screen = parent;
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
@@ -258,7 +245,6 @@ void buildArtistTracks(lv_obj_t* parent) {
     updateNav(false);
 }
 
-// on_show: (re)loads the current artist's page.
 void refreshArtistTracks() {
     lv_label_set_text(label_artist_name, artist_name);
     pending_page = page;
@@ -266,7 +252,6 @@ void refreshArtistTracks() {
     startFetch(pending_page);
 }
 
-// on_hide: frees this screen's widgets back to LVGL's pool.
 void hideArtistTracks() {
     lv_obj_clean(tracks_screen);
     label_artist_name = NULL;
@@ -300,8 +285,7 @@ void loopArtistTracks() {
     fetch_done = false;
 
     if (!list_tracks) {
-        // Screen was hidden (its widgets torn down) while this fetch was in flight -- discard;
-        // refreshArtistTracks() starts a fresh one the next time this screen is shown.
+        // Hidden while the fetch was in flight: drop the result, refreshArtistTracks() fetches again.
         fetching = false;
         return;
     }
