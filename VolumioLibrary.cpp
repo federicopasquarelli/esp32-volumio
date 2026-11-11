@@ -31,18 +31,13 @@ static lv_obj_t* btn_next_page = NULL;
 static lv_obj_t* label_page = NULL;
 static int page = 0;
 
-// Only the page currently on screen is ever held in RAM -- Volumio's browse API takes
-// offset/limit, so paging is a fresh HTTP request per page rather than one big fetch cached
-// client-side (that used to reserve a 200-item array, ~49KB, permanently at boot).
+// Only the page on screen is held in RAM: browse takes offset/limit, so each page turn is a request.
 static LibItem items[LIB_PAGE_SIZE];
 static int item_count = 0;
-// True if there's a next page. Backed by "count" -- the folder's real total item count, which
-// Volumio includes in the list alongside the page whenever offset/limit are passed -- so this is
-// exact, not a guess from the page being full. Falls back to the old "was the page full?" guess
-// only if a response is ever missing "count" (e.g. an older Volumio version).
+// True if there's a next page. Volumio returns the folder's total as "count" when offset/limit
+// are passed; without it (older versions) a full page is taken to mean there's more.
 static bool has_more = false;
-// Total items in the folder being shown, from the last fetch's "count"; -1 if the response didn't
-// include one (falls back to per-page guessing, see has_more above).
+// The folder's total item count, or -1 if the response had no "count".
 static int total_count = -1;
 
 // URIs of the folders we entered, the last one is the folder being shown.
@@ -124,21 +119,14 @@ static void startFetch(const char* uri, int pageToFetch) {
     fetching = true;
     strlcpy(fetch_uri, uri, sizeof(fetch_uri));
     fetch_page = pageToFetch;
-    // Return value checked: a task creation failure (e.g. a fragmented heap unable to give up
-    // the 8KB stack -- see the heap quirks in CLAUDE.md) used to leave `fetching` stuck true
-    // forever, since no task meant fetch_done never got set and loopLibrary() never ran --
-    // the screen stayed on "Loading..." with Prev/Next/Up permanently disabled. Now it falls
-    // back to the same retryable error UI an HTTP failure uses instead.
+    // On a fragmented heap the task's stack may not fit; without this, fetching stays true forever.
     if (xTaskCreatePinnedToCore(fetchTask, "LibFetch", 8192, NULL, 1, NULL, 1) != pdPASS) {
         fetching = false;
         showError("Out of memory, try again");
     }
 }
 
-// listing is false while loading or showing an error, when paging makes no sense. Shows
-// "current/total (item count)" when the last fetch's response told us the folder's total item
-// count (see total_count), otherwise just the current page number -- see PaginationNav.cpp's
-// formatPageLabel(), shared by every paginated screen.
+// listing is false while loading or showing an error, when paging makes no sense.
 static void updateNav(bool listing) {
     char txt[24];
     formatPageLabel(txt, sizeof(txt), listing, page, LIB_PAGE_SIZE, total_count);
@@ -172,8 +160,7 @@ static void goBack() {
     startFetch(path_stack[path_depth - 1], pending_page);
 }
 
-// Retries at whatever page the failed fetch was targeting -- pending_page still holds it,
-// untouched since the fetch that set it never made it to the loopLibrary() success path.
+// Retries the page the failed fetch was for (still in pending_page).
 static void retry_cb(lv_event_t*) {
     if (fetching || path_depth == 0) return;
     setStatus(LV_SYMBOL_REFRESH " Loading...");
@@ -206,8 +193,6 @@ static void track_cb(lv_event_t* e) {
     if (idx >= 0 && idx < item_count) startQueueAction(QUEUE_PLAY, items[idx].service, items[idx].uri, items[idx].title);
 }
 
-// items[] only ever holds the page just fetched (server-side offset/limit already did the
-// slicing), so this just renders all of it.
 static void showList() {
     lv_obj_clean(list_library);
 
@@ -246,9 +231,6 @@ void setupLibrary(lv_obj_t* parent_tab) {
     tab_library = parent_tab;
 }
 
-// on_build: constructs the widget tree. Was setupLibrary()'s whole body before the screen became
-// lazy-built -- see CLAUDE.md item 29 for why (this screen's widgets used to sit permanently in
-// LVGL's tight static pool whether or not Library was ever opened).
 void buildLibrary(lv_obj_t* parent) {
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(parent, 0, 0);
@@ -284,10 +266,6 @@ void buildLibrary(lv_obj_t* parent) {
     updateNav(false);
 }
 
-// on_show: the very first time ever (path_depth is still 0, nothing entered yet), loads the
-// root, same as the old openLibraryRoot() did. Every later visit re-fetches the remembered
-// folder/page instead -- items[] and the list widgets were both wiped on hide, so this is what
-// repopulates the freshly-rebuilt (empty) list with the same view the user left.
 void refreshLibrary() {
     if (path_depth == 0) {
         enterFolder(LIB_ROOT_URI);
@@ -298,8 +276,6 @@ void refreshLibrary() {
     }
 }
 
-// on_hide: frees this screen's widgets back to LVGL's pool. path_stack/path_depth/page/items[]
-// are deliberately left alone -- refreshLibrary() uses them to rebuild the same view next time.
 void hideLibrary() {
     lv_obj_clean(tab_library);
     list_library = NULL;
@@ -326,9 +302,7 @@ void loopLibrary() {
     fetch_done = false;
 
     if (!list_library) {
-        // The screen was hidden (its widgets torn down) while this fetch was still in flight --
-        // discard the result instead of touching freed/NULL pointers. refreshLibrary() starts a
-        // fresh fetch the next time this screen is shown, so nothing is lost.
+        // Hidden while the fetch was in flight: drop the result, refreshLibrary() fetches again.
         fetching = false;
         return;
     }

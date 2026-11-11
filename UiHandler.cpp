@@ -18,11 +18,8 @@ static bool currentShuffle = false;
 static bool currentRepeat = false;
 static bool currentRepeatSingle = false;
 
-// The elapsed time ticks locally once a second, rather than only redrawing on a pushState
-// (Volumio doesn't push one continuously during playback, e.g. it doesn't push one every
-// second, so waiting on the websocket alone made the label look frozen). Whenever a pushState
-// does arrive, base_elapsed_sec/base_elapsed_at_ms are resynced to Volumio's authoritative
-// value, correcting for local drift and for seeks/track changes.
+// Volumio doesn't push a state every second during playback, so the elapsed time is counted
+// locally from the last pushState, which resyncs it (drift, seeks, track changes).
 static int base_elapsed_sec = 0;
 static unsigned long base_elapsed_at_ms = 0;
 static int cur_duration_sec = 0;
@@ -37,12 +34,11 @@ struct ScreenEntry {
 };
 static ScreenEntry screens[MAX_SCREENS];
 static int screen_count = 0;
-// The screen showScreen() last switched to (player or one of screens[]) -- used to find and fire
-// its on_hide when switching away from it. NULL until the first real showScreen() call (the
-// player is shown by default at boot without going through showScreen()).
+// The screen showScreen() last switched to, whose on_hide runs when leaving it. NULL until the
+// first showScreen() (the player is shown at boot without it).
 static lv_obj_t* current_screen_obj = NULL;
 
-// Active buttons are filled with the accent, inactive ones are empty, like the tab labels used to be.
+// Active buttons are filled with the accent, inactive ones are outlined.
 static void set_btn_active_style(lv_obj_t* btn) {
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_ACCENT), LV_STATE_DEFAULT);
@@ -109,13 +105,11 @@ static void formatTime(char* out, size_t out_len, int totalSec) {
     else snprintf(out, out_len, "%02d:%02d", m, s);
 }
 
-// Redraws the "elapsed / duration" label. Called every loop() iteration, not on any timer of
-// its own: elapsed is recomputed fresh each time from real milliseconds since the last
-// pushState, so the displayed second changes exactly when it should, with nothing to
-// accidentally phase-lock against another timer (which a periodic "tick every ~1000ms" was
-// doing, even with distinct variables — they kept resetting to the same millis() together).
+// Redraws the "elapsed / duration" label. Recomputed from real milliseconds since the last
+// pushState on every call rather than ticked by a timer of its own, which drifted into phase
+// with the wall clock's timer.
 static int last_displayed_elapsed = -1;
-static void refreshPlaybackClock() {
+void tickPlaybackClock() {
     if (!label_elapsed) return;
 
     int elapsed = base_elapsed_sec;
@@ -131,15 +125,8 @@ static void refreshPlaybackClock() {
     lv_label_set_text(label_elapsed, time_buf);
 }
 
-// Hides every registered screen and the player, then shows just the target and runs its
-// on_show callback, if it has one. Also closes the dropdown menu, in case it was left open.
-//
-// Lazy build / free-on-hide: if the screen being left has an on_hide, it runs now (it's expected
-// to lv_obj_clean() its container and null out its own lv_obj_t* pointers -- see addScreen()'s
-// comment), and its `built` flag clears so the next time it's shown, on_build runs again. If the
-// target has an on_build and isn't currently built, it runs now, before on_show. Screens that
-// pass on_build == NULL (the player, reached separately, and any screen that opts out) are
-// unaffected -- they're just always "built" from setup() as before.
+// Runs the screen being left's on_hide (so its on_build runs again next time), hides every screen
+// and the menu, shows the target and runs its on_build (if not built) and on_show.
 void showScreen(lv_obj_t* target) {
     if (current_screen_obj && current_screen_obj != target) {
         for (int i = 0; i < screen_count; i++) {
@@ -282,7 +269,7 @@ static void addMenuEntry(const char* name, const char* icon, lv_obj_t* target) {
     menu_tile_count++;
 }
 
-// --- Volumio system actions (restart / shut down), behind a confirmation ---
+// --- Volumio system actions (update library / restart / shut down), behind a confirmation ---
 // Shutting the Pi down can't be undone from here (it has to be switched back on by hand), so
 // neither action fires from the tile itself: the tile only opens a confirm dialog.
 
@@ -367,15 +354,12 @@ void setupUI() {
     lv_obj_set_style_text_color(label_top, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(label_top, LV_ALIGN_TOP_LEFT, 10, 5);
 
-    // Elapsed / duration, top center, between the clock and the dropdown toggle. Lives in the
-    // shared header (like the clock) rather than the player screen's own content, so it's
-    // visible from Library/Queue too.
+    // Elapsed / duration, top center. In the shared header so it's visible from every screen.
     label_elapsed = lv_label_create(scr);
     lv_obj_set_style_text_color(label_elapsed, lv_color_hex(0xAAAAAA), 0);
     lv_obj_align(label_elapsed, LV_ALIGN_TOP_MID, 0, 8);
 
-    // Menu button, top right, level with the time. Always visible, on every screen, so you can
-    // jump straight from e.g. Library to Queue without detouring through the player first.
+    // Menu button, top right, visible on every screen.
     btn_menu = lv_button_create(scr);
     lv_obj_set_size(btn_menu, 46, 28);
     lv_obj_align(btn_menu, LV_ALIGN_TOP_RIGHT, -10, 4);
@@ -525,11 +509,8 @@ void setupUI() {
     lv_obj_set_style_pad_all(cont_player, 0, 0);
     lv_obj_remove_flag(cont_player, LV_OBJ_FLAG_SCROLLABLE);
 
-    // "Volumio is unreachable" notice. Covers the whole player area rather than sitting in a free
-    // corner: once the connection has dropped, whatever controls/track info were showing are
-    // stale and their buttons would silently do nothing, and a plain opaque cover also swallows
-    // taps on them. The header (and so the dropdown) stays outside it. Hidden until
-    // setVolumioOffline(true).
+    // "Volumio is unreachable" notice. Covers the whole player area, so stale controls are hidden
+    // and can't be tapped; the header and menu stay usable. Hidden until setVolumioOffline(true).
     cont_offline = lv_obj_create(cont_player);
     lv_obj_set_size(cont_offline, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_bg_color(cont_offline, lv_color_hex(0x000000), 0);
@@ -543,7 +524,6 @@ void setupUI() {
     lv_obj_center(offline_label);
     lv_obj_add_flag(cont_offline, LV_OBJ_FLAG_HIDDEN);
 
-    // Player's own dropdown entry, now that there's no dedicated Back button to return to it.
     addMenuEntry("Player", LV_SYMBOL_PLAY, cont_player);
 }
 
@@ -569,9 +549,7 @@ void updateTime() {
 }
 
 static lv_obj_t* createScreen(void (*on_build)(lv_obj_t*), void (*on_show)(void), void (*on_hide)(void)) {
-    // Plain content filling the space below the top bar, same geometry the player screen uses.
-    // Empty until on_build runs (the first time this screen is shown, see showScreen()) -- or
-    // forever, for a screen that passes on_build == NULL.
+    // Fills the space below the header, like the player. Empty until on_build runs.
     lv_obj_t* screen = lv_obj_create(lv_screen_active());
     lv_obj_set_pos(screen, 0, TOP_BAR_H);
     lv_obj_set_size(screen, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_H);
@@ -586,7 +564,6 @@ static lv_obj_t* createScreen(void (*on_build)(lv_obj_t*), void (*on_show)(void)
 }
 
 lv_obj_t* addScreen(const char* name, const char* icon, void (*on_build)(lv_obj_t*), void (*on_show)(void), void (*on_hide)(void)) {
-    // The dropdown (see addMenuEntry) is how every one of these is reached.
     lv_obj_t* screen = createScreen(on_build, on_show, on_hide);
     addMenuEntry(name, icon, screen);
     return screen;
@@ -616,8 +593,7 @@ void updateVolumioUI(const char* title, const char* artist, const char* album, b
     if (!label_title) {
         lv_obj_t* t1 = cont_player;
 
-        // Track info, top of the screen, left-aligned (no album art box anymore -- see
-        // CLAUDE.md item 8/17, tried and reverted twice).
+        // Track info, top of the screen, left-aligned.
         lv_obj_t* now_playing = lv_label_create(t1);
         lv_label_set_text(now_playing, "NOW PLAYING");
         lv_obj_set_style_text_font(now_playing, &lv_font_montserrat_ext_12, 0);
@@ -734,7 +710,7 @@ void updateVolumioUI(const char* title, const char* artist, const char* album, b
     base_elapsed_at_ms = millis();
     cur_duration_sec = durationSec;
     cur_is_playing = isPlaying;
-    refreshPlaybackClock();
+    tickPlaybackClock();
 
     if (shuffle != shown_shuffle) {
         shown_shuffle = shuffle;
@@ -758,8 +734,4 @@ void updateVolumeUI(int volume) {
         snprintf(txt, sizeof(txt), "%d", volume);
         setLabelIfChanged(label_volume, txt);
     }
-}
-
-void tickPlaybackClock() {
-    refreshPlaybackClock();
 }
