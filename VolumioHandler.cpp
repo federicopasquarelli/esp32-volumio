@@ -104,6 +104,12 @@ void setVolume(int v) {
   ws.sendTXT(cmd);
 }
 
+void moveInQueue(int from, int to) {
+  char cmd[64];
+  snprintf(cmd, sizeof(cmd), "42[\"moveQueue\",{\"from\":%d,\"to\":%d}]", from, to);
+  ws.sendTXT(cmd);
+}
+
 void setRepeatMode(bool value, bool repeatSingle) {
   char cmd[128];
   sprintf(cmd, "42[\"setRepeat\", {\"value\": %s, \"repeatSingle\": %s}]", value ? "true" : "false", repeatSingle ? "true" : "false");
@@ -142,3 +148,16 @@ void removeFromQueue(int index) {
   snprintf(cmd, sizeof(cmd), "42[\"removeFromQueue\",{\"value\":%d}]", index);
   ws.sendTXT(cmd);
 }
+
+// ["<event>",{"name":"<name>"}], built with ArduinoJson so the name is escaped.
+static void sendPlaylistEvent(const char* event, const char* name) {
+  JsonDocument msg;
+  msg.add(event);
+  msg.add<JsonObject>()["name"] = name;
+  String json;
+  serializeJson(msg, json);
+  String frame = "42" + json;
+  ws.sendTXT(frame);
+}
+void playPlaylist(const char* name) { sendPlaylistEvent("playPlaylist", name); }
+void enqueuePlaylist(const char* name) { sendPlaylistEvent("enqueue", name); }
