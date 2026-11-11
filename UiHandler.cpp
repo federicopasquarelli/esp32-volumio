@@ -177,10 +177,71 @@ void showPlayer() {
     showScreen(cont_player);
 }
 
+// --- Menu tiles: a 3x2 grid of icon + name tiles, the last one "System" ---
+
+#define MAX_MENU_TILES (MAX_SCREENS + 2)  // + Player, + System
+#define MENU_TILE_W 94   // three across the grid's 300px of usable width, 8px apart
+#define MENU_TILE_H 92   // two rows in the 204px below the header (6px padding top and bottom)
+
+struct MenuTile { lv_obj_t* btn; lv_obj_t* icon; lv_obj_t* target; };  // target NULL: System
+static MenuTile menu_tiles[MAX_MENU_TILES];
+static int menu_tile_count = 0;
+static int highlighted_tile = -1;
+static lv_obj_t *menu_title, *btn_menu_back, *system_view;
+
+// The tile of the screen you're on is filled with the accent; the rest are outlined, with the
+// icon in the accent (System in grey, like the actions behind it).
+static void styleMenuTile(const MenuTile& t, bool active) {
+    if (active) {
+        set_btn_active_style(t.btn);
+    } else {
+        set_btn_inactive_style(t.btn);
+        if (!t.target) lv_obj_set_style_border_color(t.btn, lv_color_hex(0x555555), 0);
+    }
+    uint32_t icon_color = active ? 0xFFFFFF : (t.target ? COLOR_ACCENT : 0x888888);
+    lv_obj_set_style_text_color(t.icon, lv_color_hex(icon_color), 0);
+}
+
+static void highlightCurrentTile() {
+    // Nothing has gone through showScreen() yet at boot: the player is what's showing.
+    lv_obj_t* current = current_screen_obj ? current_screen_obj : cont_player;
+    int idx = -1;  // a hidden sub-page (e.g. an artist's track list) has no tile
+    for (int i = 0; i < menu_tile_count; i++)
+        if (menu_tiles[i].target == current) idx = i;
+    if (idx == highlighted_tile) return;
+    if (highlighted_tile >= 0) styleMenuTile(menu_tiles[highlighted_tile], false);
+    if (idx >= 0) styleMenuTile(menu_tiles[idx], true);
+    highlighted_tile = idx;
+}
+
+// The menu shows either the tile grid or, after tapping System, the system actions with a back
+// button in the header.
+static void showMenuView(bool system) {
+    if (system) {
+        lv_obj_add_flag(menu_grid, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(system_view, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(btn_menu_back, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(menu_title, "System");
+        lv_obj_align(menu_title, LV_ALIGN_TOP_LEFT, 66, 5);
+    } else {
+        lv_obj_add_flag(system_view, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(btn_menu_back, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(menu_grid, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(menu_title, "Menu");
+        lv_obj_align(menu_title, LV_ALIGN_TOP_LEFT, 10, 5);
+    }
+}
+
 static void menu_open_cb(lv_event_t*) {
+    showMenuView(false);
+    highlightCurrentTile();
     // Screens are created after the menu, so bring it back above whichever one is showing.
     lv_obj_move_foreground(menu_list);
     lv_obj_remove_flag(menu_list, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void menu_back_cb(lv_event_t*) {
+    showMenuView(false);
 }
 
 // Just hides it: nothing underneath was ever switched away from, so there's nothing to restore
@@ -190,24 +251,35 @@ static void menu_close_cb(lv_event_t*) {
 }
 
 static void menu_item_cb(lv_event_t* e) {
-    showScreen((lv_obj_t*)lv_event_get_user_data(e));
+    lv_obj_t* target = (lv_obj_t*)lv_event_get_user_data(e);
+    if (target) showScreen(target);
+    else showMenuView(true);  // System
 }
 
-// One big tile in the menu grid, navigating to target when tapped. Used both for the Player entry
-// and for every screen registered via addScreen(). Two columns of 146px fill the grid's 300px of
-// usable width; four tiles fill its first two rows, and any more (including the two system-action
-// tiles added last, see addSystemMenuActions()) just make the grid scroll -- nothing is pinned
-// outside the scrollable area anymore.
-static void addMenuEntry(const char* name, lv_obj_t* target) {
+// One tile in the menu grid: a 32px icon (it has to be in lv_font_montserrat_ext_32's subset, see
+// CustomFonts.h) over the name. target is the screen it opens, or NULL for the System tile.
+static void addMenuEntry(const char* name, const char* icon, lv_obj_t* target) {
+    if (menu_tile_count >= MAX_MENU_TILES) return;
     lv_obj_t* tile = lv_button_create(menu_grid);
-    lv_obj_set_size(tile, 146, 56);
-    set_btn_inactive_style(tile);
+    lv_obj_set_size(tile, MENU_TILE_W, MENU_TILE_H);
     lv_obj_set_style_radius(tile, 12, 0);
+    lv_obj_set_style_pad_all(tile, 0, 0);
+    lv_obj_set_style_pad_row(tile, 8, 0);
+    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_add_event_cb(tile, menu_item_cb, LV_EVENT_CLICKED, target);
-    lv_obj_t* tile_label = lv_label_create(tile);
-    lv_obj_set_style_text_font(tile_label, &lv_font_montserrat_ext_18, 0);
-    lv_label_set_text(tile_label, name);
-    lv_obj_center(tile_label);
+
+    lv_obj_t* icon_label = lv_label_create(tile);
+    lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_ext_32, 0);
+    lv_label_set_text(icon_label, icon);
+
+    lv_obj_t* name_label = lv_label_create(tile);
+    lv_obj_set_style_text_font(name_label, &lv_font_montserrat_ext_14, 0);
+    lv_label_set_text(name_label, name);
+
+    menu_tiles[menu_tile_count] = { tile, icon_label, target };
+    styleMenuTile(menu_tiles[menu_tile_count], false);
+    menu_tile_count++;
 }
 
 // --- Volumio system actions (restart / shut down), behind a confirmation ---
@@ -249,35 +321,41 @@ static void action_tile_cb(lv_event_t* e) {
     lv_obj_remove_flag(confirm_layer, LV_OBJ_FLAG_HIDDEN);
 }
 
-// A tile in the same scrollable grid as addMenuEntry()'s, for a destructive system action instead
-// of a navigation target. Grey outline instead of the accent the navigation tiles use, so these
-// don't read as just another destination. No absolute position: like every other grid tile, its
-// spot comes from flex wrap, in whatever order addMenuAction() is called -- see
-// addSystemMenuActions() for why that's deferred until after every screen has registered its own
-// tile, so Restart/Shut down end up last instead of wherever setupUI() itself happened to run.
-static void addMenuAction(const char* label, const MenuAction* action) {
-    lv_obj_t* tile = lv_button_create(menu_grid);
-    lv_obj_set_size(tile, 146, 56);
-    set_btn_inactive_style(tile);
-    lv_obj_set_style_border_color(tile, lv_color_hex(0x555555), 0);
-    lv_obj_set_style_radius(tile, 12, 0);
-    lv_obj_add_event_cb(tile, action_tile_cb, LV_EVENT_CLICKED, (void*)action);
-    lv_obj_t* tile_label = lv_label_create(tile);
-    lv_obj_set_style_text_font(tile_label, &lv_font_montserrat_ext_18, 0);
-    lv_label_set_text(tile_label, label);
-    lv_obj_center(tile_label);
+// A full-width row in the System view, opening the confirm dialog for its action. Grey outline
+// instead of the accent, so these don't read as destinations.
+static void addSystemRow(const char* icon, const char* label, const MenuAction* action) {
+    lv_obj_t* row = lv_button_create(system_view);
+    lv_obj_set_size(row, LV_PCT(100), 52);
+    set_btn_inactive_style(row);
+    lv_obj_set_style_border_color(row, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_text_color(row, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_radius(row, 12, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_style_pad_left(row, 18, 0);
+    lv_obj_set_style_pad_column(row, 14, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_event_cb(row, action_tile_cb, LV_EVENT_CLICKED, (void*)action);
+
+    lv_obj_t* icon_label = lv_label_create(row);
+    lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_ext_18, 0);
+    lv_obj_set_style_text_color(icon_label, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_set_width(icon_label, 22);  // so the three labels line up whatever the icon's width
+    lv_label_set_text(icon_label, icon);
+
+    lv_obj_t* text = lv_label_create(row);
+    lv_obj_set_style_text_font(text, &lv_font_montserrat_ext_18, 0);
+    lv_label_set_text(text, label);
 }
 
-// Adds the Update DB/Restart/Shut down tiles to the end of the menu grid. Must be called once, after every
-// addScreen()/addHiddenScreen() in setup() has already run its addMenuEntry() -- setupUI() itself
-// runs before any of those (it's what creates menu_grid in the first place), so if these were
-// added from inside setupUI() they'd land first, not last. Calling this from esp32-volumio.ino's
-// setup(), after the last addScreen(), is what makes them require scrolling past the rest of the
-// menu to reach, instead of being pinned in their own fixed row below it (the previous behavior).
+// Adds the System tile as the grid's last one, and the rows behind it. Must be called once, after
+// every addScreen() in setup(): setupUI() runs before any of them (it creates menu_grid), so a
+// tile added from there would come first, not last.
 void addSystemMenuActions() {
-    addMenuAction("Update DB", &update_db_action);
-    addMenuAction(LV_SYMBOL_REFRESH "  Restart", &restart_action);
-    addMenuAction(LV_SYMBOL_POWER "  Shut down", &shutdown_action);
+    addMenuEntry("System", LV_SYMBOL_SETTINGS, NULL);
+    addSystemRow(LV_SYMBOL_DRIVE, "Update library", &update_db_action);
+    addSystemRow(LV_SYMBOL_REFRESH, "Restart Volumio", &restart_action);
+    addSystemRow(LV_SYMBOL_POWER, "Shut down Volumio", &shutdown_action);
 }
 
 void setupUI() {
@@ -309,8 +387,9 @@ void setupUI() {
     lv_obj_center(menu_icon);
 
     // Menu: a full-screen overlay (covering the header too) with a title, a close button in the
-    // same top-right spot as the button that opens it, and a grid of big tiles -- one per screen
-    // registered with addScreen(), plus "Player" itself. Hidden until btn_menu is tapped.
+    // same top-right spot as the button that opens it, and a 3x2 grid of icon tiles -- Player, one
+    // per screen registered with addScreen(), and System (the system actions, one tap further
+    // away). Hidden until btn_menu is tapped.
     menu_list = lv_obj_create(scr);
     lv_obj_set_pos(menu_list, 0, 0);
     lv_obj_set_size(menu_list, SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -321,7 +400,19 @@ void setupUI() {
     lv_obj_remove_flag(menu_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(menu_list, LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_t* menu_title = lv_label_create(menu_list);
+    // Back from the System view to the grid, top left where the title normally starts.
+    btn_menu_back = lv_button_create(menu_list);
+    lv_obj_set_size(btn_menu_back, 46, 28);
+    lv_obj_align(btn_menu_back, LV_ALIGN_TOP_LEFT, 10, 4);
+    set_btn_inactive_style(btn_menu_back);
+    lv_obj_add_event_cb(btn_menu_back, menu_back_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t* back_icon = lv_label_create(btn_menu_back);
+    lv_obj_set_style_text_font(back_icon, &lv_font_montserrat_ext_18, 0);
+    lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
+    lv_obj_center(back_icon);
+    lv_obj_add_flag(btn_menu_back, LV_OBJ_FLAG_HIDDEN);
+
+    menu_title = lv_label_create(menu_list);
     lv_obj_set_style_text_font(menu_title, &lv_font_montserrat_ext_18, 0);
     lv_obj_set_style_text_color(menu_title, lv_color_hex(0xFFFFFF), 0);
     lv_label_set_text(menu_title, "Menu");
@@ -339,9 +430,7 @@ void setupUI() {
 
     menu_grid = lv_obj_create(menu_list);
     lv_obj_set_pos(menu_grid, 0, TOP_BAR_H);
-    // Fills the rest of the menu below the header, not just enough for two rows -- every tile
-    // (nav screens + the two system actions, added last via addSystemMenuActions()) lives in this
-    // one scrollable grid now, so there's no separate fixed row to size around anymore.
+    // Six tiles fill it exactly; a seventh would make it scroll.
     lv_obj_set_size(menu_grid, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_H);
     lv_obj_set_style_bg_opa(menu_grid, LV_OPA_TRANSP, 0);
     lv_obj_set_style_radius(menu_grid, 0, 0);
@@ -354,6 +443,21 @@ void setupUI() {
     lv_obj_set_style_pad_column(menu_grid, 8, 0);
     lv_obj_set_scroll_dir(menu_grid, LV_DIR_VER);  // only matters once the tiles overflow the visible area
     lv_obj_set_flex_flow(menu_grid, LV_FLEX_FLOW_ROW_WRAP);
+
+    // The System view, same area as the grid: one row per action (addSystemMenuActions()).
+    // Created before the confirm dialog so the dialog stays on top of it.
+    system_view = lv_obj_create(menu_list);
+    lv_obj_set_pos(system_view, 0, TOP_BAR_H);
+    lv_obj_set_size(system_view, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_H);
+    lv_obj_set_style_bg_opa(system_view, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(system_view, 0, 0);
+    lv_obj_set_style_border_width(system_view, 0, 0);
+    lv_obj_set_style_pad_hor(system_view, 10, 0);
+    lv_obj_set_style_pad_ver(system_view, 6, 0);
+    lv_obj_set_style_pad_row(system_view, 8, 0);
+    lv_obj_set_flex_flow(system_view, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(system_view, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(system_view, LV_OBJ_FLAG_HIDDEN);
 
     // Confirm dialog, over the whole menu: a dimmed backdrop that also swallows taps on the tiles
     // behind it, and a centered panel with a title, a one-line consequence, Cancel and the action.
@@ -440,7 +544,7 @@ void setupUI() {
     lv_obj_add_flag(cont_offline, LV_OBJ_FLAG_HIDDEN);
 
     // Player's own dropdown entry, now that there's no dedicated Back button to return to it.
-    addMenuEntry("Player", cont_player);
+    addMenuEntry("Player", LV_SYMBOL_PLAY, cont_player);
 }
 
 void setVolumioOffline(bool offline) {
@@ -481,10 +585,10 @@ static lv_obj_t* createScreen(void (*on_build)(lv_obj_t*), void (*on_show)(void)
     return screen;
 }
 
-lv_obj_t* addScreen(const char* name, void (*on_build)(lv_obj_t*), void (*on_show)(void), void (*on_hide)(void)) {
+lv_obj_t* addScreen(const char* name, const char* icon, void (*on_build)(lv_obj_t*), void (*on_show)(void), void (*on_hide)(void)) {
     // The dropdown (see addMenuEntry) is how every one of these is reached.
     lv_obj_t* screen = createScreen(on_build, on_show, on_hide);
-    addMenuEntry(name, screen);
+    addMenuEntry(name, icon, screen);
     return screen;
 }
 
