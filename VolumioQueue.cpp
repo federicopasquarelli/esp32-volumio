@@ -28,7 +28,7 @@ static int total_count = 0;
 static int page = 0;
 static int fetch_page = 0;
 
-enum QueueOp { OP_REFRESH, OP_PLAY, OP_CLEAR, OP_REFRESH_AFTER_REMOVE };
+enum QueueOp { OP_REFRESH, OP_PLAY, OP_CLEAR, OP_REFRESH_DELAYED };
 
 // Written by the network task, read by loopQueue(). Only one operation runs at a time.
 static volatile bool busy = false;
@@ -93,8 +93,8 @@ static void queueTask(void* pv) {
         case OP_REFRESH:
             fetchQueue();
             break;
-        case OP_REFRESH_AFTER_REMOVE:
-            // The remove went out over the WebSocket; give Volumio a moment to apply it.
+        case OP_REFRESH_DELAYED:
+            // A remove/move went out over the WebSocket; give Volumio a moment to apply it.
             vTaskDelay(pdMS_TO_TICKS(400));
             fetchQueue();
             break;
@@ -171,7 +171,54 @@ static void remove_cb(lv_event_t* e) {
     total_count--;
     showList();
     fetch_page = page;
-    startOp(OP_REFRESH_AFTER_REMOVE);
+    startOp(OP_REFRESH_DELAYED);
+}
+
+// user_data is (index << 1) | down.
+static void move_cb(lv_event_t* e) {
+    int arg = (int)(intptr_t)lv_event_get_user_data(e);
+    int from = arg >> 1;
+    int to = (arg & 1) ? from + 1 : from - 1;
+    int slot = from - page * QUEUE_PAGE_SIZE;
+    if (busy || slot < 0 || slot >= page_items || to < 0 || to >= total_count) return;
+
+    moveInQueue(from, to);
+
+    // Swap the rows locally when both are on this page, then reload to pick up the real order
+    // (and the item pulled in from the neighbouring page when the move crosses a page edge).
+    int to_slot = to - page * QUEUE_PAGE_SIZE;
+    if (to_slot >= 0 && to_slot < page_items) {
+        char tmp[QUEUE_TITLE_LEN];
+        memcpy(tmp, titles[slot], QUEUE_TITLE_LEN);
+        memcpy(titles[slot], titles[to_slot], QUEUE_TITLE_LEN);
+        memcpy(titles[to_slot], tmp, QUEUE_TITLE_LEN);
+        showList();
+    }
+    fetch_page = page;
+    startOp(OP_REFRESH_DELAYED);
+}
+
+// A small accent button inside a row. remove_style_all() drops the theme's press transitions,
+// which pile up in LVGL's pool under fast taps (see CLAUDE.md, Memory).
+static lv_obj_t* rowButton(lv_obj_t* row, const char* symbol, lv_event_cb_t cb, int arg, bool enabled) {
+    lv_obj_t* b = lv_button_create(row);
+    int32_t radius = lv_obj_get_style_radius(b, LV_PART_MAIN);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_size(b, 30, QUEUE_ROW_H - 8);
+    lv_obj_set_style_radius(b, radius, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x19A34A), LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(b, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, LV_STATE_DISABLED);
+    lv_obj_set_style_text_color(b, lv_color_hex(0x555555), LV_STATE_DISABLED);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, (void*)(intptr_t)arg);
+    if (!enabled) lv_obj_add_state(b, LV_STATE_DISABLED);
+
+    lv_obj_t* l = lv_label_create(b);
+    lv_label_set_text(l, symbol);
+    lv_obj_center(l);
+    return b;
 }
 
 // Only the current page is turned into widgets, so a long queue costs no more than a short one.
@@ -184,15 +231,9 @@ static void showList() {
         styleButton(b);
         lv_obj_add_event_cb(b, item_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
 
-        lv_obj_t* rm = lv_button_create(b);
-        lv_obj_set_size(rm, 30, QUEUE_ROW_H - 8);
-        lv_obj_set_style_bg_color(rm, lv_color_hex(COLOR_ACCENT), 0);
-        lv_obj_set_style_bg_color(rm, lv_color_hex(0x19A34A), LV_STATE_PRESSED);
-        lv_obj_set_style_text_color(rm, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_add_event_cb(rm, remove_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
-        lv_obj_t* l = lv_label_create(rm);
-        lv_label_set_text(l, LV_SYMBOL_CLOSE);
-        lv_obj_center(l);
+        rowButton(b, LV_SYMBOL_UP, move_cb, i << 1, i > 0);
+        rowButton(b, LV_SYMBOL_DOWN, move_cb, (i << 1) | 1, i < total_count - 1);
+        rowButton(b, LV_SYMBOL_CLOSE, remove_cb, i, true);
     }
 
     if (total_count == 0) styleListText(lv_list_add_text(list_queue, "Queue is empty"));

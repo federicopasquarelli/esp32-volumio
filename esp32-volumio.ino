@@ -2,13 +2,18 @@
 #include "UiHandler.h"
 #include "TouchHandler.h"
 #include "VolumioHandler.h"
-#include "VolumioLibrary.h"
+#include "BrowseScreen.h"
 #include "VolumioQueue.h"
 #include "VolumioArtists.h"
 #include "VolumioArtistTracks.h"
 #include "CustomFonts.h"
 #include <WiFi.h>
 #include "arduino_secrets.h"
+// Folder browsers over /api/v1/browse, one per root. Each keeps its own folder and page.
+static BrowseScreen library({ "music-library", "Library", 12, "Empty folder", true });
+static BrowseScreen playlists({ "playlists", "Playlists", 2, "No playlists", false });
+static BrowseScreen radio({ "radio", "Radio", 6, "No stations", false });
+
 void setup() {
     pinMode(TFT_BL, OUTPUT); digitalWrite(TFT_BL, HIGH);
     setupLVGL();
@@ -16,11 +21,16 @@ void setup() {
     setupUI();
     // Screens are built (on_build) and loaded (on_show) when first shown, and freed (on_hide)
     // when left, so only the visible one uses LVGL memory.
-    setupLibrary(addScreen("Library", LV_SYMBOL_DIRECTORY, buildLibrary, refreshLibrary, hideLibrary));
+    addScreen("Library", LV_SYMBOL_DIRECTORY,
+              [](lv_obj_t* p) { library.build(p); }, [] { library.refresh(); }, [] { library.hide(); });
     setupQueue(addScreen("Queue", LV_SYMBOL_LIST, buildQueue, refreshQueue, hideQueue));
     lv_obj_t* artistsScreen = addScreen("Artists", SYMBOL_USER, buildArtists, refreshArtists, hideArtists);
     setupArtistTracks(artistsScreen,
                        addHiddenScreen(buildArtistTracks, refreshArtistTracks, hideArtistTracks));
+    addScreen("Playlists", LV_SYMBOL_AUDIO,
+              [](lv_obj_t* p) { playlists.build(p); }, [] { playlists.refresh(); }, [] { playlists.hide(); });
+    addScreen("Radio", SYMBOL_RADIO,
+              [](lv_obj_t* p) { radio.build(p); }, [] { radio.refresh(); }, [] { radio.hide(); });
     // Must come after every addScreen() above, so the System tile is the grid's last.
     addSystemMenuActions();
     WiFi.begin(SECRET_SSID, SECRET_PASS);
@@ -31,7 +41,9 @@ void setup() {
 void loop() {
     loopLVGL();
     loopVolumio();
-    loopLibrary();
+    library.loop();
+    playlists.loop();
+    radio.loop();
     loopQueue();
     loopArtists();
     loopArtistTracks();
