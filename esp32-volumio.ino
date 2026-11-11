@@ -34,7 +34,10 @@ void setup() {
     // Must come after every addScreen() above, so the System tile is the grid's last.
     addSystemMenuActions();
     WiFi.begin(SECRET_SSID, SECRET_PASS);
-    while (WiFi.status() != WL_CONNECTED) delay(100);
+    // Keep LVGL running while WiFi connects, so the loader animates instead of a blank screen.
+    setLoadingStatus("Connecting to WiFi\u2026");
+    while (WiFi.status() != WL_CONNECTED) { lv_timer_handler(); delay(5); }
+    setLoadingStatus("Connecting to Volumio\u2026");
     configTzTime(SECRET_TIMEZONE, "pool.ntp.org");
     setupVolumio();
 }

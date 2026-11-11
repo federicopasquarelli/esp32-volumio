@@ -22,8 +22,8 @@
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
 
-// Backlight turns off after this long without a touch
-#define SCREEN_TIMEOUT_MS (30UL * 1000UL)
+// The backlight timeout (seconds without a touch) is SECRET_SCREEN_TIMEOUT_SEC in
+// arduino_secrets.h; LvglHandler.cpp falls back to 30 when it isn't set.
 
 // Accent for the current menu tile and active buttons
 #define COLOR_ACCENT 0x1DB954

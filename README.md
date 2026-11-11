@@ -27,7 +27,7 @@ browsing, queue management), so it should work with any Volumio install on your 
 - **AirPlay aware**: transport controls are disabled while Volumio is playing via AirPlay.
 - **Offline notice**: the UI stays responsive and shows "Volumio is unreachable" when the server
   is down, and reconnects automatically.
-- **Screen timeout**: the backlight turns off after 30 seconds without a touch, and the screen
+- **Screen timeout**: the backlight turns off after 30 seconds without a touch (configurable), and the screen
   goes back to the player. The first touch only wakes it.
 
 ## Hardware
@@ -95,11 +95,13 @@ Leave the other defaults as they are (16-bit colour depth, Montserrat 14 as the 
    #define SECRET_TIMEZONE "CET-1CEST,M3.5.0,M10.5.0/3"  // POSIX TZ string
    #define SECRET_VOLUMIO_HOST "volumio.local"            // hostname or IP
    #define SECRET_VOLUMIO_PORT 3000
+   #define SECRET_SCREEN_TIMEOUT_SEC 30                // backlight off after this many idle seconds
    #define SECRET_SERIAL_PORT "/dev/ttyUSB0"           // used by arduino.sh only
    ```
    `SECRET_TIMEZONE` is a POSIX TZ string. Look yours up in
    [this list](https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv). If
    `volumio.local` doesn't resolve on your network, use the Volumio device's IP address.
+   `SECRET_SCREEN_TIMEOUT_SEC` is optional; without it the screen turns off after 30 seconds.
    `SECRET_SERIAL_PORT` is the board's serial port for `./arduino.sh` (see below); the sketch
    itself doesn't use it.
    `arduino_secrets.h` is gitignored, so your credentials stay out of the repository.
@@ -179,7 +181,7 @@ port your board is on. To use another port for a single run: `PORT=/dev/ttyACM0 
 | `PaginationNav.*` | Shared Prev/Next buttons and page indicator |
 | `ListStyle.*` | Shared list row style |
 | `CustomFonts.h`, `src/fonts/` | Montserrat fonts with accented characters and smart punctuation |
-| `DisplayConfig.h` | Pins, screen size, colours, timeout |
+| `DisplayConfig.h` | Pins, screen size, colours |
 
 ## License
 

@@ -187,49 +187,22 @@ void setupArtistTracks(lv_obj_t* artistsScreen, lv_obj_t* tracksScreenParent) {
     tracks_screen = tracksScreenParent;
 }
 
-// A header row (Back + artist name), the track list and the Prev/Next bar, each row 34px:
-// 34 + 34*4 + 34 = 204, the full height below the top bar.
+// The title row (Back + artist name), the track list and the Prev/Next bar (see LIST_BODY_H).
 void buildArtistTracks(lv_obj_t* parent) {
     tracks_screen = parent;
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(parent, 0, 0);
 
-    lv_obj_t* btn_back = lv_button_create(parent);
-    lv_obj_set_size(btn_back, 50, TRACKS_ROW_H - 4);
-    lv_obj_set_pos(btn_back, 4, 2);
-    lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x222222), LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(btn_back, lv_color_hex(0xAAAAAA), 0);
-    lv_obj_set_style_border_width(btn_back, 1, 0);
-    lv_obj_set_style_border_color(btn_back, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_add_event_cb(btn_back, back_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t* back_icon = lv_label_create(btn_back);
-    lv_obj_set_style_text_font(back_icon, &lv_font_montserrat_ext_18, 0);
-    lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
-    lv_obj_center(back_icon);
-
-    label_artist_name = lv_label_create(parent);
+    lv_obj_t* header = createListHeader(parent, LIST_HEADER_H);
+    createPagerButton(header, 46, LIST_HEADER_H - 4, LV_SYMBOL_LEFT, back_cb);
+    label_artist_name = addListTitle(header, "");
     lv_label_set_long_mode(label_artist_name, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_width(label_artist_name, 250);
-    lv_obj_set_pos(label_artist_name, 60, 8);
-    lv_obj_set_style_text_font(label_artist_name, &lv_font_montserrat_ext_18, 0);
-    lv_obj_set_style_text_color(label_artist_name, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_width(label_artist_name, SCREEN_WIDTH - 2 * 8 - 46 - 8);
 
-    list_tracks = lv_list_create(parent);
-    lv_obj_set_pos(list_tracks, 0, TRACKS_ROW_H);
-    lv_obj_set_size(list_tracks, LV_PCT(100), TRACKS_ROW_H * TRACKS_PAGE_SIZE);
-    lv_obj_remove_flag(list_tracks, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(list_tracks, 0, 0);
-    lv_obj_set_style_pad_row(list_tracks, 0, 0);
-    lv_obj_set_style_bg_color(list_tracks, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_border_width(list_tracks, 0, 0);
-    lv_obj_set_style_text_color(list_tracks, lv_color_hex(0xAAAAAA), 0);
-    // Track names come straight from file tags, which often have accented letters or smart
-    // quotes the stock font doesn't have a glyph for -- see CustomFonts.h.
-    lv_obj_set_style_text_font(list_tracks, &lv_font_montserrat_ext_14, 0);
+    list_tracks = createList(parent);
 
     lv_obj_t* bar = lv_obj_create(parent);
-    lv_obj_set_pos(bar, 0, TRACKS_ROW_H + TRACKS_ROW_H * TRACKS_PAGE_SIZE);
+    lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_size(bar, LV_PCT(100), TRACKS_ROW_H);
     lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(bar, 0, 0);
