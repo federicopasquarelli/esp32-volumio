@@ -33,10 +33,7 @@
 
 #define BLACK 0x0000
 
-// LvglHandler.cpp's flush hands LVGL's little-endian RGB565 buffer to draw16bitBeRGBBitmap(),
-// which sends the bytes as they are in memory where the ILI9341 expects the high byte first -- so
-// every colour reaches the panel with its two bytes swapped (that's why COLOR_ACCENT, 0x1DB954,
-// renders blue-violet instead of green; black and white are unaffected). Deliberately left as is;
-// switching the flush to draw16bitRGBBitmap() would show the colours as written.
+// Colours are shown as written: LvglHandler.cpp's flush uses draw16bitRGBBitmap(), which swaps
+// LVGL's little-endian RGB565 into the byte order the ILI9341 expects.
 
 #endif

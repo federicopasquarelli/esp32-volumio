@@ -1,4 +1,5 @@
 #include "VolumioLibrary.h"
+#include "ListStyle.h"
 #include "DisplayConfig.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -149,7 +150,7 @@ static void updateNav(bool listing) {
 
 static void setStatus(const char* text) {
     lv_obj_clean(list_library);
-    lv_list_add_text(list_library, text);
+    styleListText(lv_list_add_text(list_library, text));
     updateNav(false);
 }
 
@@ -179,15 +180,7 @@ static void retry_cb(lv_event_t*) {
     startFetch(path_stack[path_depth - 1], pending_page);
 }
 
-static void styleButton(lv_obj_t* btn) {
-    lv_obj_set_height(btn, LIB_ROW_H);
-    lv_obj_set_style_pad_top(btn, 0, 0);
-    lv_obj_set_style_pad_bottom(btn, 0, 0);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0x111111), 0);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(btn, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_border_color(btn, lv_color_hex(0x222222), 0);
-}
+static void styleButton(lv_obj_t* btn) { styleListRow(btn, LIB_ROW_H); }
 
 // LVGL still sends CLICKED on release after a long press, so remember the press was consumed.
 static bool long_press_handled = false;
@@ -229,7 +222,7 @@ static void showList() {
         }
     }
 
-    if (item_count == 0) lv_list_add_text(list_library, "Empty folder");
+    if (item_count == 0) styleListText(lv_list_add_text(list_library, "Empty folder"));
     updateNav(true);
 }
 
@@ -320,7 +313,7 @@ static void showError(const char* error) {
     lv_obj_clean(list_library);
     char msg[64];
     snprintf(msg, sizeof(msg), LV_SYMBOL_WARNING " %s", error);
-    lv_list_add_text(list_library, msg);
+    styleListText(lv_list_add_text(list_library, msg));
 
     lv_obj_t* retry = lv_list_add_button(list_library, LV_SYMBOL_REFRESH, "Retry");
     styleButton(retry);

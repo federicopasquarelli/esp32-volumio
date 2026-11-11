@@ -14,7 +14,10 @@ static uint8_t* buf = NULL;
 #define BUF_SIZE (SCREEN_WIDTH * 20 * sizeof(lv_color16_t))
 
 void my_disp_flush(lv_display_t *d, const lv_area_t *a, uint8_t *px_map) {
-    gfx->draw16bitBeRGBBitmap(a->x1, a->y1, (uint16_t *)px_map, a->x2-a->x1+1, a->y2-a->y1+1);
+    // LVGL 9's RGB565 buffer is little-endian; draw16bitRGBBitmap() byte-swaps it into the
+    // high-byte-first order the ILI9341 expects (the Be variant sent it unswapped, which tinted
+    // greys and turned the accent violet).
+    gfx->draw16bitRGBBitmap(a->x1, a->y1, (uint16_t *)px_map, a->x2-a->x1+1, a->y2-a->y1+1);
     lv_display_flush_ready(d);
 }
 

@@ -14,5 +14,12 @@
 LV_FONT_DECLARE(lv_font_montserrat_ext_12)
 LV_FONT_DECLARE(lv_font_montserrat_ext_14)
 LV_FONT_DECLARE(lv_font_montserrat_ext_18)
+// Only digits, "%", space and a few icons (the menu tiles' LV_SYMBOL_PLAY/DIRECTORY/LIST/SETTINGS
+// and SYMBOL_USER, plus LV_SYMBOL_POWER and two unused ones) -- regenerate with more glyphs (command
+// in the file's header) before using it for other text.
+LV_FONT_DECLARE(lv_font_montserrat_ext_32)
+
+// FontAwesome user icon (U+F007), not in LVGL's own symbol set; in ext_32 only.
+#define SYMBOL_USER "\xEF\x80\x87"
 
 #endif
