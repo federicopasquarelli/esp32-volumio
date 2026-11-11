@@ -23,8 +23,8 @@ browsing, queue management), so it should work with any Volumio install on your 
 - **AirPlay aware**: transport controls are disabled while Volumio is playing via AirPlay.
 - **Offline notice**: the UI stays responsive and shows "Volumio is unreachable" when the server
   is down, and reconnects automatically.
-- **Screen timeout**: the backlight turns off after 30 seconds without a touch. The first touch
-  only wakes the screen and returns to the player.
+- **Screen timeout**: the backlight turns off after 30 seconds without a touch, and the screen
+  goes back to the player. The first touch only wakes it.
 
 ## Hardware
 
@@ -77,7 +77,7 @@ Leave the other defaults as they are (16-bit colour depth, Montserrat 14 as the 
 
 1. Clone the repository. The folder must be named `esp32-volumio` to match the sketch:
    ```bash
-   git clone <repo-url> esp32-volumio
+   git clone https://github.com/federicopasquarelli/esp32-volumio.git
    cd esp32-volumio
    ```
 2. Create your secrets file from the template:
@@ -127,10 +127,14 @@ board isn't `/dev/ttyUSB0`):
 
 ## Usage
 
-- Tap the menu button (top right) to switch between **Player**, **Library**, **Queue** and
-  **Artists**, or to reach **Update DB**, **Restart** and **Shut down**.
-- Tap an item to open or play it. Long-press a folder or artist for queue options.
-- Use the Prev/Next buttons at the bottom of a list to page through it.
+- Tap the menu button (top right) for a grid of **Player**, **Library**, **Queue**, **Artists**
+  and **System**. The tile of the screen you're on is highlighted. **System** holds *Update
+  library*, *Restart Volumio* and *Shut down Volumio*, each asking for confirmation first.
+- Tap a folder to open it, or a track to play it. Long-press a folder or artist for queue options.
+- Tap an artist to see their tracks, then tap a track to play it.
+- In the queue, tap a track to jump to it, or its **×** to remove it. The trash button clears the
+  queue.
+- Use the buttons at the bottom of a list to page through it (and, in Library, to go up a folder).
 
 ## Troubleshooting
 
@@ -138,9 +142,11 @@ board isn't `/dev/ttyUSB0`):
   your SSID and password (the ESP32 only supports 2.4 GHz networks).
 - **"Volumio is unreachable"**: check `SECRET_VOLUMIO_HOST`/`SECRET_VOLUMIO_PORT`, and try the
   IP address instead of `volumio.local`.
-- **Colours look different from the hex values in the code** (the green accent shows as
-  blue-violet): known, the display flush sends RGB565 bytes swapped. Switching `LvglHandler.cpp`'s
-  flush to `draw16bitRGBBitmap()` shows the colours as written.
+- **Colours look wrong** (the green accent shows as violet, greys look green): the RGB565 byte
+  order doesn't match your panel. `LvglHandler.cpp`'s flush uses `draw16bitRGBBitmap()`; try
+  `draw16bitBeRGBBitmap()` instead.
+- **Colours are inverted**: some CYD revisions need the last argument of `Arduino_ILI9341(...)` in
+  `LvglHandler.cpp` set to `false`.
 - **Upload fails with "port busy"**: close any serial monitor that has the port open.
 - **Link error with no source error** (e.g. `undefined reference to setup()`): clear arduino-cli's
   build cache (`~/.cache/arduino/sketches/`) and compile again.
@@ -159,9 +165,17 @@ board isn't `/dev/ttyUSB0`):
 | `VolumioArtists.*`, `VolumioArtistTracks.*` | Artist list and per-artist tracks |
 | `VolumioQueue.*` | Queue viewer/editor |
 | `QueueActionMenu.*` | Long-press Play / Add to queue / Clear and play menu |
-| `PaginationNav.*` | Shared Prev/Next buttons |
+| `PaginationNav.*` | Shared Prev/Next buttons and page indicator |
+| `ListStyle.*` | Shared list row style |
 | `CustomFonts.h`, `src/fonts/` | Montserrat fonts with accented characters and smart punctuation |
 | `DisplayConfig.h` | Pins, screen size, colours, timeout |
+
+## License
+
+[MIT](LICENSE). The bundled fonts in `src/fonts/` are generated from
+[Montserrat](https://github.com/JulietaUla/Montserrat) (SIL Open Font License) and
+[Font Awesome Free](https://fontawesome.com/) (SIL OFL / CC BY 4.0), the same sources LVGL's own
+fonts use.
 
 Keywords: ESP32, ESP32-2432S028, Cheap Yellow Display, CYD, Volumio, remote control, music player,
 touchscreen, LVGL, ILI9341, XPT2046, Arduino, Raspberry Pi, smart clock.

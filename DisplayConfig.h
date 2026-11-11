@@ -25,10 +25,10 @@
 // Backlight turns off after this long without a touch
 #define SCREEN_TIMEOUT_MS (30UL * 1000UL)
 
-// Accent for the selected tab and active buttons
+// Accent for the current menu tile and active buttons
 #define COLOR_ACCENT 0x1DB954
 
-// Height of the top bar (clock + dropdown menu toggle), above the player/library/queue screens
+// Height of the top bar (clock, playback time, menu button) above every screen
 #define TOP_BAR_H 36
 
 #define BLACK 0x0000

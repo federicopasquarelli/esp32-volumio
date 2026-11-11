@@ -6,20 +6,14 @@
 
 WebSocketsClient ws;
 
-// WebSocketsClient::loop() retries a connection that isn't up with a *blocking* connect() (a
-// DNS/mDNS lookup of volumio.local plus up to 5s of TCP timeout) on the caller's own thread --
-// here the Arduino loop(), which also runs LVGL and the touch reader. With the Raspberry off
-// that meant a multi-second freeze every half second, so the whole UI, including the dropdown
-// to reach Library/Queue/Artists, was effectively dead. loopVolumio() therefore only lets
-// ws.loop() run when the socket is already connected, or when this probe has just confirmed
-// Volumio is accepting connections (so the connect it makes will be quick). The probe is what
-// eats the blocking time now, on its own task, where it can't hurt anything.
+// WebSocketsClient::loop() reconnects with a *blocking* connect() (DNS/mDNS lookup plus up to 5s
+// of TCP timeout) on the caller's thread, which here also runs LVGL and touch: with Volumio off,
+// the UI froze every half second. So loopVolumio() only calls ws.loop() while connected, or when
+// this background probe has just seen Volumio's port accept a connection.
 static volatile bool volumio_reachable = false;
 
-// After a reboot/shutdown command Volumio's port stays open for a few more seconds while it goes
-// down, so the probe would still report it reachable and ws.loop() would start a blocking connect
-// against a dying host on the UI thread (the UI froze right after pressing Restart). Until this
-// deadline nothing reconnects; the probe just idles and reachability reads as false.
+// After a reboot/shutdown Volumio's port stays open for a few seconds while it goes down, and a
+// reconnect then would block the UI. Until this deadline nothing reconnects.
 #define SYSTEM_ACTION_HOLD_OFF_MS 30000
 static volatile unsigned long reconnect_hold_until_ms = 0;
 static volatile bool reconnect_hold = false;
@@ -30,10 +24,8 @@ static bool holdingOff() {
 
 static void probeTask(void*) {
   for (;;) {
-    // Nothing to probe while connected, and deliberately no write to volumio_reachable here:
-    // the DISCONNECTED handler below is what clears it, and this task racing it could undo that.
-    // Short sleep so a drop is noticed (and, if Volumio is actually still up, re-confirmed and
-    // reconnected) within a fraction of a second rather than leaving a visible gap.
+    // Nothing to probe while connected. No write to volumio_reachable here: the DISCONNECTED
+    // handler clears it, and racing it could undo that.
     if (ws.isConnected()) {
       vTaskDelay(pdMS_TO_TICKS(250));
       continue;
